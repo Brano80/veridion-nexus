@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  veridion-nexus-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: veridion-nexus-api
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+    # Healthcheck removed - would require curl installation
+    # You can add it later if needed by installing curl in Dockerfile
+

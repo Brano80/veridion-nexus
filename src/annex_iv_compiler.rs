@@ -1,13 +1,23 @@
 use printpdf::*;
+use serde::Serialize;
 use std::fs::File;
 use std::io::BufWriter;
+use utoipa::ToSchema;
 
 /// A compliance record for the Annex IV report
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ComplianceRecord {
+    /// Timestamp when the action was logged
+    #[schema(example = "2024-01-15 14:30:00")]
     pub timestamp: String,
+    /// Summary of the agent action
+    #[schema(example = "agent-001: Credit Check")]
     pub action_summary: String,
+    /// Qualified Electronic Seal ID from eIDAS provider
+    #[schema(example = "SEAL-2024-01-15-ABC123")]
     pub seal_id: String,
+    /// Compliance status of the action
+    #[schema(example = "COMPLIANT")]
     pub status: String,
 }
 

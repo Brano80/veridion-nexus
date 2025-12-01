@@ -1,12 +1,10 @@
 use sha2::{Sha256, Digest};
-use reqwest::blocking::Client;
-use std::thread;
+use reqwest::Client;
 use std::time::SystemTime;
 use rand::RngCore;
 use rand::rng;
 use std::sync::Mutex;
 use std::collections::VecDeque;
-use serde_json::json;
 use base64::Engine;
 
 /// Hash a payload using SHA256 and return the hex string
@@ -57,7 +55,7 @@ impl SignicatClient {
             .unwrap_or_else(|_| "https://api.signicat.com/auth/open/connect/token".to_string());
         
         let api_url = std::env::var("SIGNICAT_API_URL")
-            .unwrap_or_else(|_| "https://api.signicat.com/v1/sealing".to_string());
+            .unwrap_or_else(|_| "https://api.signicat.com/sign/documents".to_string());
         
         // Default to false (mock mode) if not set
         let use_real_api = std::env::var("USE_REAL_API")
@@ -83,7 +81,7 @@ impl SignicatClient {
     /// 
     /// * `Ok(String)` with the access token
     /// * `Err(String)` if the token request fails
-    fn get_live_token(&self) -> Result<String, String> {
+    async fn get_live_token(&self) -> Result<String, String> {
         // Create Basic Auth header (client_id:client_secret base64 encoded)
         let auth_string = format!("{}:{}", self.client_id, self.client_secret);
         let auth_b64 = base64::engine::general_purpose::STANDARD.encode(auth_string.as_bytes());
@@ -101,11 +99,13 @@ impl SignicatClient {
             .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&params)
             .send()
+            .await
             .map_err(|e| format!("Token request failed: {}", e))?;
         
         // Parse JSON response
         let json: serde_json::Value = response
             .json()
+            .await
             .map_err(|e| format!("Failed to parse token response: {}", e))?;
         
         // Extract access_token
@@ -134,7 +134,7 @@ impl SignicatClient {
     /// 
     /// * `Ok(String)` with the seal ID and timestamp (or PENDING_SYNC_LOCAL if buffered)
     /// * `Err(String)` if the request fails
-    pub fn request_seal(&self, log_hash: &str) -> Result<String, String> {
+    pub async fn request_seal(&self, log_hash: &str) -> Result<String, String> {
         // Check if outage is simulated
         let is_outage = *self.simulate_outage.lock().expect("Failed to acquire outage lock");
         
@@ -154,7 +154,7 @@ impl SignicatClient {
         // Check if we should use real API or mock mode
         if self.use_real_api {
             // Real API mode: Use OAuth2 and actual Signicat API
-            return self.request_seal_real(log_hash);
+            return self.request_seal_real(log_hash).await;
         }
         
         // Mock mode: Keep existing logic (Circuit Breaker + Sleep + Fake Seal)
@@ -167,8 +167,8 @@ impl SignicatClient {
         
         println!("Network: Sending Hash [{}...] to Signicat Qualified Cloud...", hash_start);
         
-        // Mock network delay (500ms)
-        thread::sleep(std::time::Duration::from_millis(500));
+        // Mock network delay (500ms) - use async sleep
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         
         // Generate a random ID for the seal
         let mut random_bytes = vec![0u8; 8];
@@ -185,10 +185,12 @@ impl SignicatClient {
         Ok(format!("QES_SEAL_{} | TIMESTAMP: {}", random_id, timestamp))
     }
 
-    /// Request a seal using the real Signicat API (OAuth2 authenticated)
-    fn request_seal_real(&self, log_hash: &str) -> Result<String, String> {
+    /// Request a seal using the real Signicat Sign API Documents endpoint (OAuth2 authenticated)
+    /// Uploads the log hash as a document and receives a Document ID as the Seal ID
+    async fn request_seal_real(&self, log_hash: &str) -> Result<String, String> {
         // Get OAuth2 access token
-        let token = self.get_live_token()?;
+        let token = self.get_live_token().await?;
+        println!("   ✅ OAuth2 token obtained successfully");
         
         // Show first 8 characters of hash for display
         let hash_start = if log_hash.len() >= 8 {
@@ -197,48 +199,60 @@ impl SignicatClient {
             log_hash
         };
         
-        println!("Network: Sending Hash [{}...] to Signicat Qualified Cloud (Real API)...", hash_start);
+        println!("Network: Uploading Hash [{}...] to Signicat Documents API...", hash_start);
+        println!("   API URL: {}", self.api_url);
         
-        // Prepare JSON body for the seal request
-        let body = json!({
-            "payload": log_hash
-        });
-        
-        // Make POST request to Signicat API
+        // Make POST request to Signicat Documents API
+        // Send log_hash as plain text with required headers
         let response = self.client
             .post(&self.api_url)
             .header("Authorization", format!("Bearer {}", token))
-            .header("Content-Type", "application/json")
-            .json(&body)
+            .header("Content-Type", "text/plain")
+            .header("Content-Disposition", "attachment; filename=\"veridion_log.txt\"")
+            .body(log_hash.to_string())
             .send()
-            .map_err(|e| format!("Seal request failed: {}", e))?;
+            .await
+            .map_err(|e| format!("Document upload failed: {}", e))?;
         
-        // Check if request was successful
-        if !response.status().is_success() {
-            return Err(format!("API returned error status: {}", response.status()));
+        let status = response.status();
+        println!("   Response status: {}", status);
+        
+        // Check if request was successful (201 Created or 200 OK)
+        if status.is_success() || status.as_u16() == 201 {
+            // Parse JSON response
+            let json: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|e| format!("Failed to parse document response: {}", e))?;
+            
+            println!("   ✅ Success! Response JSON: {}", json);
+            
+            // Extract document ID from response
+            // Signicat Documents API returns "documentId" field, not "id"
+            let seal_id = json.get("documentId")
+                .or_else(|| json.get("id"))  // Fallback to "id" if present
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| {
+                    let keys = json.as_object()
+                        .map(|o| o.keys().collect::<Vec<_>>())
+                        .unwrap_or_default();
+                    format!("No 'documentId' or 'id' field in response. Response keys: {:?}. Full response: {}", keys, json)
+                })?;
+            
+            // Get current timestamp
+            let timestamp = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            
+            // Return seal response in same format as mock
+            Ok(format!("QES_SEAL_{} | TIMESTAMP: {}", seal_id, timestamp))
+        } else {
+            // Request failed - get error details
+            let error_body = response.text().await.unwrap_or_else(|_| "No error details".to_string());
+            Err(format!("API returned error status: {} - Response: {}", status, error_body))
         }
-        
-        // Parse JSON response
-        let json: serde_json::Value = response
-            .json()
-            .map_err(|e| format!("Failed to parse seal response: {}", e))?;
-        
-        // Extract seal ID from response (adjust field name based on Signicat API spec)
-        let seal_id = json.get("sealId")
-            .or_else(|| json.get("id"))
-            .or_else(|| json.get("seal_id"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| "No seal ID in response".to_string())?;
-        
-        // Get current timestamp
-        let timestamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        
-        // Return seal response in same format as mock
-        Ok(format!("QES_SEAL_{} | TIMESTAMP: {}", seal_id, timestamp))
     }
 
     /// Sync all pending buffered hashes to the API
@@ -291,12 +305,12 @@ mod tests {
         assert_eq!(hash1, expected_hash);
     }
 
-    #[test]
-    fn test_mock_seal() {
+    #[tokio::test]
+    async fn test_mock_seal() {
         let client = SignicatClient::new();
         let test_hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
         
-        let result = client.request_seal(test_hash);
+        let result = client.request_seal(test_hash).await;
         
         assert!(result.is_ok());
         let seal_response = result.unwrap();
@@ -304,8 +318,8 @@ mod tests {
         assert!(seal_response.contains("TIMESTAMP:"));
     }
 
-    #[test]
-    fn test_circuit_breaker() {
+    #[tokio::test]
+    async fn test_circuit_breaker() {
         let client = SignicatClient::new();
         let test_hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
         
@@ -313,7 +327,7 @@ mod tests {
         client.set_outage(true);
         
         // Request seal (should return PENDING)
-        let result = client.request_seal(test_hash);
+        let result = client.request_seal(test_hash).await;
         assert!(result.is_ok());
         let response = result.unwrap();
         assert!(response.starts_with("PENDING_SYNC_LOCAL:"));
@@ -332,6 +346,74 @@ mod tests {
         // Check buffer is empty
         let buffer = client.offline_buffer.lock().expect("Failed to acquire buffer lock");
         assert_eq!(buffer.len(), 0);
+    }
+
+    #[tokio::test]
+    #[ignore] // Ignore by default, run with: cargo test -- --ignored
+    async fn test_real_api_seal() {
+        // Load .env file if it exists
+        let _ = dotenv::dotenv();
+        
+        // Skip if API keys are not set
+        let client_id = match std::env::var("SIGNICAT_CLIENT_ID") {
+            Ok(id) if id != "placeholder_id" && !id.is_empty() => id,
+            _ => {
+                println!("⚠️ Skipping real API test - SIGNICAT_CLIENT_ID not set or is placeholder");
+                println!("   Set SIGNICAT_CLIENT_ID environment variable or add it to .env file");
+                return;
+            }
+        };
+        
+        let _client_secret = match std::env::var("SIGNICAT_CLIENT_SECRET") {
+            Ok(secret) if secret != "placeholder_secret" && !secret.is_empty() => secret,
+            _ => {
+                println!("⚠️ Skipping real API test - SIGNICAT_CLIENT_SECRET not set or is placeholder");
+                println!("   Set SIGNICAT_CLIENT_SECRET environment variable or add it to .env file");
+                return;
+            }
+        };
+        
+        let use_real_api = std::env::var("USE_REAL_API")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+        
+        if !use_real_api {
+            println!("⚠️ Skipping real API test - USE_REAL_API not set to true");
+            println!("   Set USE_REAL_API=true environment variable or add it to .env file");
+            return;
+        }
+        
+        // Ensure we're using the correct Documents endpoint
+        // Use unsafe block for set_var (safe in test context)
+        unsafe {
+            std::env::set_var("SIGNICAT_API_URL", "https://api.signicat.com/sign/documents");
+        }
+        
+        println!("🧪 Testing real Signicat Sandbox API (Documents endpoint)...");
+        println!("   Client ID: {}...", &client_id[..std::cmp::min(8, client_id.len())]);
+        println!("   API URL: https://api.signicat.com/sign/documents");
+        
+        let client = SignicatClient::new();
+        let test_hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        
+        println!("   Requesting seal for hash: {}...", &test_hash[..16]);
+        
+        let result = client.request_seal(test_hash).await;
+        
+        match result {
+            Ok(seal_response) => {
+                println!("✅ Real API test PASSED!");
+                println!("   Seal response: {}", seal_response);
+                assert!(seal_response.starts_with("QES_SEAL_"), "Response should start with QES_SEAL_");
+                assert!(seal_response.contains("TIMESTAMP:"), "Response should contain timestamp");
+            }
+            Err(e) => {
+                println!("❌ Real API test FAILED!");
+                println!("   Error: {}", e);
+                panic!("Real API seal request failed: {}", e);
+            }
+        }
     }
 }
 

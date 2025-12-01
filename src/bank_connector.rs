@@ -1,4 +1,4 @@
-use reqwest::blocking::Client;
+use reqwest::Client;
 use reqwest::Identity;
 
 /// Bank session with mTLS authentication
@@ -121,6 +121,7 @@ mod tests {
             eprintln!("Note: Client builder failed (rustls-tls limitation), but Identity creation succeeded, proving certificate loading capability");
             
             // Create a test client to verify the rest of the functionality
+            // Note: In async context, this would need to be awaited, but for test we just verify structure
             let test_client = Client::builder()
                 .build()
                 .expect("Test client should build");
