@@ -11,6 +11,8 @@ pub struct AppState {
     pub signicat: SignicatClient,
     /// In-memory compliance log for Annex IV documentation
     pub compliance_log: Mutex<Vec<ComplianceRecord>>,
+    /// Lockdown flag - when true, all new agent actions are blocked
+    pub is_locked_down: Mutex<bool>,
 }
 
 impl AppState {
@@ -20,6 +22,7 @@ impl AppState {
             key_store: Mutex::new(VeridionKeyStore::new()),
             signicat: SignicatClient::new(),
             compliance_log: Mutex::new(Vec::new()),
+            is_locked_down: Mutex::new(false),
         }
     }
 }

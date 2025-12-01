@@ -1,5 +1,5 @@
 use veridion_nexus::api_state::AppState;
-use veridion_nexus::routes::{log_action, get_logs, download_report, LogActionRequest, LogActionResponse};
+use veridion_nexus::routes::{log_action, get_logs, download_report, revoke_keys, restore_keys, LogActionRequest, LogActionResponse};
 use veridion_nexus::annex_iv_compiler::ComplianceRecord;
 use actix_web::{web, App, HttpServer};
 use actix_cors::Cors;
@@ -9,11 +9,13 @@ use utoipa_swagger_ui::SwaggerUi;
 
 /// OpenAPI documentation for Veridion Nexus API
 #[derive(OpenApi)]
-#[openapi(
+    #[openapi(
     paths(
         veridion_nexus::routes::log_action,
         veridion_nexus::routes::get_logs,
-        veridion_nexus::routes::download_report
+        veridion_nexus::routes::download_report,
+        veridion_nexus::routes::revoke_keys,
+        veridion_nexus::routes::restore_keys
     ),
     components(schemas(
         LogActionRequest,
@@ -62,6 +64,8 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/log_action").route(web::post().to(log_action)))
             .service(web::resource("/logs").route(web::get().to(get_logs)))
             .service(web::resource("/download_report").route(web::get().to(download_report)))
+            .service(web::resource("/revoke_keys").route(web::post().to(revoke_keys)))
+            .service(web::resource("/restore_keys").route(web::post().to(restore_keys)))
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}")
                     .url("/api-docs/openapi.json", ApiDoc::openapi())

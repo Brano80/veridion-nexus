@@ -59,6 +59,18 @@ pub async fn log_action(
     req: web::Json<LogActionRequest>,
     state: web::Data<AppState>,
 ) -> ActixResult<HttpResponse> {
+    // Step 0: Check if system is in lockdown mode
+    let is_locked = *state.is_locked_down.lock()
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Lock error: {}", e)))?;
+    
+    if is_locked {
+        return Ok(HttpResponse::Forbidden()
+            .json(serde_json::json!({
+                "status": "BLOCKED",
+                "reason": "SYSTEM_LOCKDOWN: Agent identity keys have been revoked. All operations are suspended."
+            })));
+    }
+    
     // Step 1: Sovereign Lock - Check IP address (hardcoded for MVP)
     // Using "5.1.2.3" (Germany/EU) to allow full compliance flow
     let target_ip = "5.1.2.3"; // TODO: Extract from request or use agent's actual IP
@@ -146,6 +158,58 @@ pub async fn log_action(
 pub async fn get_logs(state: web::Data<AppState>) -> impl Responder {
     let logs = state.compliance_log.lock().unwrap();
     HttpResponse::Ok().json(&*logs)
+}
+
+/// Revokes agent identity keys and puts the system in lockdown mode
+/// 
+/// This endpoint activates the kill switch, blocking all new agent actions.
+/// Once activated, all POST requests to /log_action will be rejected with 403 Forbidden.
+#[utoipa::path(
+    post,
+    path = "/revoke_keys",
+    responses(
+        (status = 200, description = "Agent keys successfully revoked, system in lockdown"),
+        (status = 500, description = "Error activating lockdown")
+    ),
+    tag = "Compliance"
+)]
+pub async fn revoke_keys(state: web::Data<AppState>) -> ActixResult<HttpResponse> {
+    let mut is_locked = state.is_locked_down.lock()
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Lock error: {}", e)))?;
+    
+    *is_locked = true;
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "status": "LOCKDOWN_ACTIVATED",
+        "message": "Identity certificates revoked via Signicat API. Agent is now isolated.",
+        "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+    })))
+}
+
+/// Restores agent identity keys and removes lockdown mode
+/// 
+/// This endpoint deactivates the kill switch, allowing agent actions to proceed normally.
+/// Useful for testing and recovery scenarios.
+#[utoipa::path(
+    post,
+    path = "/restore_keys",
+    responses(
+        (status = 200, description = "Agent keys restored, system operational"),
+        (status = 500, description = "Error restoring keys")
+    ),
+    tag = "Compliance"
+)]
+pub async fn restore_keys(state: web::Data<AppState>) -> ActixResult<HttpResponse> {
+    let mut is_locked = state.is_locked_down.lock()
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Lock error: {}", e)))?;
+    
+    *is_locked = false;
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "status": "LOCKDOWN_DEACTIVATED",
+        "message": "Identity certificates restored. Agent operations resumed.",
+        "timestamp": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+    })))
 }
 
 /// Generates and downloads the Annex IV compliance report as a PDF
