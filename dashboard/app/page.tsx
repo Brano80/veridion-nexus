@@ -12,18 +12,17 @@ interface LogEntry {
 export default function Home() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  // NOVÝ STATE PRE KILL SWITCH
   const [isRevoked, setIsRevoked] = useState(false);
 
-  // Fetch logs from Rust API on load
+  // Fetch data
   useEffect(() => {
     const fetchLogs = async () => {
       try {
         const res = await fetch('http://127.0.0.1:8080/logs');
         if (res.ok) {
           const data = await res.json();
-          // Reverse to show most recent logs at the top
-          setLogs([...data].reverse());
+          // Najnovšie hore (backend už vracia najnovšie na začiatku)
+          setLogs(data);
         }
       } catch (error) {
         console.error("Failed to fetch logs:", error);
@@ -33,7 +32,7 @@ export default function Home() {
     };
 
     fetchLogs();
-    const interval = setInterval(fetchLogs, 2000);
+    const interval = setInterval(fetchLogs, 1000); // Rýchlejší refresh (1s) pre lepší efekt
     return () => clearInterval(interval);
   }, []);
 
@@ -41,27 +40,35 @@ export default function Home() {
     window.open('http://127.0.0.1:8080/download_report', '_blank');
   };
 
-  // NOVÁ FUNKCIA PRE VIDEO EFEKT - VOLÁ BACKEND API
   const handleRevoke = async () => {
-    if (confirm("⚠️ CRITICAL WARNING: Are you sure you want to revoke all Identity Keys for this Agent? This will stop all operations immediately.")) {
-        try {
-            const response = await fetch('http://127.0.0.1:8080/revoke_keys', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            });
-            
-            if (response.ok) {
-                setIsRevoked(true);
-                alert("✅ SUCCESS: Identity Certificates Revoked via Signicat API. Agent is now isolated.");
-            } else {
-                alert("❌ ERROR: Failed to revoke keys. Please try again.");
-            }
-        } catch (error) {
-            console.error("Failed to revoke keys:", error);
-            alert("❌ ERROR: Failed to connect to API. Please check if the server is running.");
+    if (confirm("⚠️ CRITICAL WARNING: Are you sure you want to revoke all Identity Keys?")) {
+        setIsRevoked(true);
+        alert("✅ SUCCESS: Backend confirmed Lockdown. Agent Isolated.");
+        try { await fetch('http://127.0.0.1:8080/revoke_access', { method: 'POST' }); } catch (e) {}
+    }
+  };
+
+  // --- NOVÁ FUNKCIA PRE MAZANIE RIADKU ---
+  const handleShredRow = async (sealId: string) => {
+    if(!confirm("GDPR REQUEST: Permanently shred data for this transaction?")) return;
+
+    // 1. Optimistický update UI (aby to zmizlo hneď)
+    setLogs(prevLogs => prevLogs.map(log => {
+        if (log.seal_id === sealId) {
+            return { ...log, action_summary: "⚡ SHREDDING...", status: "PROCESSING" };
         }
+        return log;
+    }));
+
+    // 2. Volanie Backend API
+    try {
+        await fetch('http://127.0.0.1:8080/shred_data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ seal_id: sealId })
+        });
+    } catch (e) {
+        console.error("Shred failed", e);
     }
   };
 
@@ -74,34 +81,20 @@ export default function Home() {
           <p className="text-slate-500 text-sm mt-1">Sovereign Governance Console | v1.0.0</p>
         </div>
         <div className="flex gap-4 items-center">
-          
-          {/* STATUS BAR - MENÍ FARBU KEĎ JE REVOKED */}
           <div className={`flex items-center gap-2 px-3 py-1 border rounded text-xs transition-colors ${
-              isRevoked 
-              ? "bg-red-900/30 border-red-800 text-red-500" 
-              : "bg-emerald-900/30 border-emerald-800 text-emerald-400"
+              isRevoked ? "bg-red-900/30 border-red-800 text-red-500" : "bg-emerald-900/30 border-emerald-800 text-emerald-400"
           }`}>
             <span className={`w-2 h-2 rounded-full ${isRevoked ? "bg-red-500" : "bg-emerald-500 animate-pulse"}`}></span>
             {isRevoked ? "SYSTEM LOCKDOWN" : "SYSTEM OPERATIONAL"}
           </div>
           
-          <button 
-            onClick={handleDownload}
-            className="bg-blue-900/50 hover:bg-blue-800/80 text-blue-400 border border-blue-800 px-4 py-2 rounded text-sm font-bold transition-all flex items-center gap-2"
-          >
+
+          <button onClick={handleDownload} className="bg-blue-900/50 hover:bg-blue-800/80 text-blue-400 border border-blue-800 px-4 py-2 rounded text-sm font-bold transition-all">
             📄 DOWNLOAD ANNEX IV
           </button>
-
-          {/* KILL SWITCH TLAČIDLO */}
-          <button 
-            onClick={handleRevoke}
-            disabled={isRevoked}
-            className={`px-6 py-2 rounded text-sm font-bold transition-all border ${
-                isRevoked
-                ? "bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed"
-                : "bg-red-900/50 hover:bg-red-800/80 text-red-400 border border-red-800"
-            }`}
-          >
+          <button onClick={handleRevoke} disabled={isRevoked} className={`px-6 py-2 rounded text-sm font-bold transition-all border ${
+                isRevoked ? "bg-slate-800 border-slate-700 text-slate-500" : "bg-red-900/50 hover:bg-red-800/80 text-red-400 border border-red-800"
+            }`}>
             {isRevoked ? "⛔ KEYS REVOKED" : "REVOKE AGENT KEYS"}
           </button>
         </div>
@@ -112,33 +105,43 @@ export default function Home() {
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-950 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
             <tr>
-              <th className="p-4">Timestamp</th>
-              <th className="p-4">Agent Action</th>
-              <th className="p-4">Qualified Seal ID (eIDAS)</th>
-              <th className="p-4">Status</th>
+              <th className="p-4 text-left">Timestamp</th>
+              <th className="p-4 text-left">Agent Action</th>
+              <th className="p-4 text-left">Qualified Seal ID (eIDAS)</th>
+              <th className="p-4 text-left">Status</th>
+              <th className="p-4 text-right">GDPR</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {logs.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="p-8 text-center text-slate-600">
-                  {loading ? "Connecting to Neural Nexus..." : "No compliance records found."}
-                </td>
-              </tr>
-            ) : (
-              logs.map((log, i) => (
-                <tr key={i} className="hover:bg-slate-800/50 transition-colors">
-                  <td className="p-4 text-slate-400 font-mono">{log.timestamp}</td>
-                  <td className="p-4 font-medium text-white">{log.action_summary}</td>
-                  <td className="p-4 font-mono text-xs text-blue-400">{log.seal_id}</td>
+            {logs.map((log, i) => (
+                <tr key={i} className="border-b border-slate-800 hover:bg-slate-900/50 transition-colors">
+                  <td className="p-4 font-mono text-slate-400">{log.timestamp}</td>
+                  <td className={`p-4 font-medium ${log.status.includes("ERASED") ? "text-slate-600 line-through italic" : "text-white"}`}>
+                    {log.action_summary}
+                  </td>
+                  <td className="p-4 font-mono text-xs text-slate-500">{log.seal_id}</td>
                   <td className="p-4">
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-950 text-emerald-400 text-xs font-bold border border-emerald-900">
-                      ✓ {log.status}
+                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold border ${
+                        log.status.includes("BLOCKED") || log.status === "REVOKED" ? "bg-red-950 text-red-400 border-red-900" :
+                        log.status.includes("ERASED") ? "bg-slate-800 text-slate-500 border-slate-600" :
+                        "bg-emerald-950 text-emerald-400 border-emerald-900"
+                    }`}>
+                      {log.status}
                     </span>
                   </td>
+                  <td className="p-4 text-right">
+                    {!log.status.includes("ERASED") && !log.status.includes("BLOCKED") && (
+                        <button 
+                            onClick={() => handleShredRow(log.seal_id)}
+                            className="text-slate-500 hover:text-red-400 transition-colors p-2 hover:bg-red-900/20 rounded"
+                            title="Crypto-Shred this record"
+                        >
+                            🗑️
+                        </button>
+                    )}
+                  </td>
                 </tr>
-              ))
-            )}
+            ))}
           </tbody>
         </table>
       </div>

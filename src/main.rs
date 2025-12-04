@@ -1,77 +1,115 @@
-use veridion_nexus::api_state::AppState;
-use veridion_nexus::routes::{log_action, get_logs, download_report, revoke_keys, restore_keys, LogActionRequest, LogActionResponse};
-use veridion_nexus::annex_iv_compiler::ComplianceRecord;
-use actix_web::{web, App, HttpServer};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use actix_cors::Cors;
-use dotenv::dotenv;
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+use chrono::Local;
+use uuid::Uuid;
 
-/// OpenAPI documentation for Veridion Nexus API
-#[derive(OpenApi)]
-    #[openapi(
-    paths(
-        veridion_nexus::routes::log_action,
-        veridion_nexus::routes::get_logs,
-        veridion_nexus::routes::download_report,
-        veridion_nexus::routes::revoke_keys,
-        veridion_nexus::routes::restore_keys
-    ),
-    components(schemas(
-        LogActionRequest,
-        LogActionResponse,
-        ComplianceRecord
-    )),
-    tags(
-        (name = "Compliance", description = "EU AI Act compliance endpoints")
-    ),
-    info(
-        title = "VERIDION Nexus API",
-        description = "Sovereign Trust Layer for High-Risk AI Agents in the EU",
-        version = "1.0.0",
-        contact(
-            name = "Veridion Support",
-            email = "support@veridion.nexus"
-        )
-    )
-)]
-struct ApiDoc;
+// Dáta, ktoré držíme v pamäti (Logy)
+struct AppState {
+    logs: Mutex<Vec<ComplianceRecord>>,
+}
+
+#[derive(Serialize, Clone)]
+struct ComplianceRecord {
+    timestamp: String,
+    action_summary: String,
+    seal_id: String,
+    status: String,
+    tx_id: String,
+}
+
+// Čo nám posiela Python/MCP?
+#[derive(Deserialize)]
+struct LogRequest {
+    agent_id: String,
+    action: String,
+    payload: String,
+    target_region: Option<String>, // TOTO JE KĽÚČOVÉ
+}
+
+#[derive(Serialize)]
+struct LogResponse {
+    status: String,
+    seal_id: String,
+    tx_id: String,
+}
+
+// 1. ENDPOINT: LOG ACTION
+async fn log_action(req: web::Json<LogRequest>, data: web::Data<AppState>) -> impl Responder {
+    
+    // --- TU JE TÁ "DRÁMA" ---
+    // Ak je región US, zablokujeme to!
+    let is_violation = req.target_region.as_deref() == Some("US");
+    
+    let status = if is_violation { 
+        "BLOCKED (SOVEREIGNTY)" 
+    } else { 
+        "COMPLIANT" 
+    };
+
+    let seal_id = if is_violation {
+        "N/A".to_string()
+    } else {
+        Uuid::new_v4().to_string()
+    };
+
+    let tx_id = Uuid::new_v4().to_string();
+
+    // Uložíme do pamäte pre Dashboard
+    let new_record = ComplianceRecord {
+        timestamp: Local::now().format("%H:%M:%S").to_string(),
+        action_summary: format!("{}: {}", req.agent_id, req.action),
+        seal_id: seal_id.clone(),
+        status: status.to_string(),
+        tx_id: tx_id.clone(),
+    };
+
+    let mut logs = data.logs.lock().unwrap();
+    logs.insert(0, new_record); // Pridáme na začiatok zoznamu
+
+    // Vrátime odpoveď Agentovi
+    if is_violation {
+        println!("🛑 BLOCKED request to US from {}", req.agent_id);
+        HttpResponse::Forbidden().json(LogResponse {
+            status: status.to_string(),
+            seal_id: "BLOCKED".to_string(),
+            tx_id: "0000".to_string(),
+        })
+    } else {
+        println!("✅ SEALED request from {}", req.agent_id);
+        HttpResponse::Ok().json(LogResponse {
+            status: status.to_string(),
+            seal_id,
+            tx_id,
+        })
+    }
+}
+
+// 2. ENDPOINT: GET LOGS (Pre Dashboard)
+async fn get_logs(data: web::Data<AppState>) -> impl Responder {
+    let logs = data.logs.lock().unwrap();
+    HttpResponse::Ok().json(&*logs)
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Initialize environment variables
-    dotenv().ok();
-    
-    // Initialize logger
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-    
-    // Initialize application state
-    let app_state = web::Data::new(AppState::new());
-    
-    println!("🚀 Starting VERIDION Nexus API Server...");
-    println!("📡 Server listening on http://0.0.0.0:8080");
-    println!("📋 POST /log_action - Process agent actions through compliance pipeline");
-    println!("📋 GET /logs - Retrieve compliance log history");
-    println!("📄 GET /download_report - Download Annex IV compliance report PDF");
-    println!("📚 Swagger UI available at http://127.0.0.1:8080/swagger-ui/");
-    
-    // Start HTTP server
+    let app_state = web::Data::new(AppState {
+        logs: Mutex::new(Vec::new()),
+    });
+
+    println!("🚀 Veridion Nexus Backend running on port 8080");
+
     HttpServer::new(move || {
-        let cors = Cors::permissive(); // Allow all for MVP
+        let cors = Cors::permissive(); // Povolíme všetko pre demo
+
         App::new()
             .wrap(cors)
             .app_data(app_state.clone())
-            .service(web::resource("/log_action").route(web::post().to(log_action)))
-            .service(web::resource("/logs").route(web::get().to(get_logs)))
-            .service(web::resource("/download_report").route(web::get().to(download_report)))
-            .service(web::resource("/revoke_keys").route(web::post().to(revoke_keys)))
-            .service(web::resource("/restore_keys").route(web::post().to(restore_keys)))
-            .service(
-                SwaggerUi::new("/swagger-ui/{_:.*}")
-                    .url("/api-docs/openapi.json", ApiDoc::openapi())
-            )
+            .route("/log_action", web::post().to(log_action))
+            .route("/logs", web::get().to(get_logs))
     })
-    .bind("0.0.0.0:8080")?
+    .bind(("0.0.0.0", 8080))?
     .run()
     .await
 }
