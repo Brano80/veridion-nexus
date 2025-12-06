@@ -30,6 +30,7 @@ impl DeploymentMode {
     }
 
     /// Check if a feature is available in this deployment mode
+    #[allow(dead_code)]
     pub fn has_feature(&self, feature: &str) -> bool {
         match self {
             DeploymentMode::Embedded => {
@@ -48,6 +49,7 @@ impl DeploymentMode {
     }
 
     /// Get available modules for this deployment mode
+    #[allow(dead_code)]
     pub fn available_modules(&self) -> Vec<&str> {
         match self {
             DeploymentMode::Embedded => vec!["core"],

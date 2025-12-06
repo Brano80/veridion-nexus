@@ -44,6 +44,7 @@ impl Database {
     }
 
     /// Health check - verify database connection
+    #[allow(dead_code)]
     pub async fn health_check(&self) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT 1")
             .execute(&self.pool)
@@ -52,6 +53,7 @@ impl Database {
     }
 
     /// Refresh materialized views (call periodically)
+    #[allow(dead_code)]
     pub async fn refresh_views(&self) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT refresh_materialized_views()")
             .execute(&self.pool)
@@ -60,6 +62,7 @@ impl Database {
     }
 
     /// Analyze tables for query planner optimization
+    #[allow(dead_code)]
     pub async fn analyze_tables(&self) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT analyze_tables()")
             .execute(&self.pool)

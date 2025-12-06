@@ -1,15 +1,15 @@
 // Proxy Mode - Reverse Proxy Middleware
 // Intercepts AI API calls and adds compliance layer
 
-use actix_web::{dev::ServiceRequest, Error, HttpMessage};
+use actix_web::{dev::ServiceRequest, Error};
 use actix_web::dev::{Service, ServiceResponse, Transform};
-use actix_web::http::Uri;
 use futures::future::{ok, Ready};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::rc::Rc;
 
 /// Proxy middleware configuration
+#[allow(dead_code)]
 pub struct ProxyConfig {
     /// Target AI service URL (e.g., OpenAI, Azure AI, etc.)
     pub target_url: String,
@@ -20,11 +20,13 @@ pub struct ProxyConfig {
 }
 
 /// Proxy middleware
+#[allow(dead_code)]
 pub struct ProxyMiddleware {
     config: Rc<ProxyConfig>,
 }
 
 impl ProxyMiddleware {
+    #[allow(dead_code)]
     pub fn new(config: ProxyConfig) -> Self {
         Self {
             config: Rc::new(config),
@@ -53,6 +55,7 @@ where
 }
 
 /// Proxy service
+#[allow(dead_code)]
 pub struct ProxyMiddlewareService<S> {
     service: S,
     config: Rc<ProxyConfig>,
@@ -73,7 +76,7 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let config = self.config.clone();
+        let _config = self.config.clone();
         let fut = self.service.call(req);
 
         Box::pin(async move {
@@ -92,6 +95,7 @@ where
 }
 
 /// Helper function to create proxy middleware
+#[allow(dead_code)]
 pub fn create_proxy_middleware(target_url: String) -> ProxyMiddleware {
     ProxyMiddleware::new(ProxyConfig {
         target_url,

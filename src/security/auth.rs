@@ -30,6 +30,7 @@ impl Claims {
         self.roles.contains(&role.to_string())
     }
 
+    #[allow(dead_code)]
     pub fn has_any_role(&self, roles: &[&str]) -> bool {
         roles.iter().any(|r| self.has_role(r))
     }

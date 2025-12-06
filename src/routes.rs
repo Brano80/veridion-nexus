@@ -37,14 +37,13 @@ async fn authenticate_and_authorize(
 use crate::core::annex_iv::ComplianceRecord;
 use crate::compliance_models::*;
 use crate::models::db_models::*;
-use crate::models::db_models::{ConsentRecordDb, ProcessingActivityDb, DpiaRecordDb, RetentionPolicyDb, RetentionAssignmentDb, MonitoringEventDb, SystemHealthStatusDb, WebhookEndpointDb, WebhookDeliveryDb};
+use crate::models::db_models::{ConsentRecordDb, DpiaRecordDb, RetentionPolicyDb, RetentionAssignmentDb, MonitoringEventDb, SystemHealthStatusDb, WebhookEndpointDb, WebhookDeliveryDb};
 use crate::integration::webhooks::WebhookService;
 use utoipa::ToSchema;
 use actix_web::http::header::ContentDisposition;
 use std::fs;
 use chrono::{Local, Utc, DateTime};
 use uuid::Uuid;
-use std::sync::Arc;
 
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct LogRequest {
@@ -1815,6 +1814,7 @@ pub async fn create_retention_policy(
     path = "/retention/expiring",
     responses((status = 200, body = ExpiringRecordsResponse))
 )]
+#[allow(dead_code)]
 pub async fn get_expiring_records(
     query: web::Query<std::collections::HashMap<String, String>>,
     data: web::Data<AppState>,
@@ -1875,6 +1875,7 @@ pub async fn get_expiring_records(
     path = "/retention/execute",
     responses((status = 200, body = serde_json::Value))
 )]
+#[allow(dead_code)]
 pub async fn execute_retention_deletion(
     data: web::Data<AppState>,
 ) -> impl Responder {
@@ -2463,12 +2464,26 @@ pub async fn update_event_resolution(
         None
     };
     
-    let result = sqlx::query_as::<_, MonitoringEventDb>(
+    // Check if event exists
+    let _event_exists = match sqlx::query_as::<_, MonitoringEventDb>(
         "SELECT * FROM monitoring_events WHERE event_id = $1"
     )
     .bind(&event_id)
     .fetch_optional(&data.db_pool)
-    .await;
+    .await {
+        Ok(Some(_)) => {} // Event exists, continue
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": "Monitoring event not found"
+            }));
+        }
+        Err(e) => {
+            eprintln!("Error checking event existence: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Database error"
+            }));
+        }
+    };
 
     // Update the event
     let update_result = sqlx::query(
@@ -2486,6 +2501,17 @@ pub async fn update_event_resolution(
     .bind(&event_id)
     .execute(&data.db_pool)
     .await;
+
+    // Check if update succeeded
+    match update_result {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Error updating event: {}", e);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to update monitoring event"
+            }));
+        }
+    }
 
     // Fetch updated event
     let updated_event = sqlx::query_as::<_, MonitoringEventDb>(

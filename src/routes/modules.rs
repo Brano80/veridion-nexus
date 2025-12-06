@@ -40,7 +40,10 @@ async fn authenticate_and_authorize(
     resource: &str,
     action: &str,
 ) -> Result<Claims, HttpResponse> {
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = AuthService::new()
+        .map_err(|e| HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })))?;
     let claims = extract_claims(http_req, &auth_service)?;
 
     let rbac = RbacService::new(db_pool.clone());

@@ -57,7 +57,14 @@ pub async fn login(
     req: web::Json<LoginRequest>,
     data: web::Data<AppState>,
 ) -> impl Responder {
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to initialize auth service: {}", e)
+            }));
+        }
+    };
     let audit_service = AuditService::new(data.db_pool.clone());
 
     // Find user
@@ -229,18 +236,35 @@ pub async fn get_me(
     req: HttpRequest,
     data: web::Data<AppState>,
 ) -> impl Responder {
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to initialize auth service: {}", e)
+            }));
+        }
+    };
     
     let claims = match extract_claims(&req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
 
+    // Parse user ID from claims
+    let user_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Invalid user ID in token"
+            }));
+        }
+    };
+
     // Fetch full user data from database
     let user_result: Result<Option<(Uuid, String, String, Option<String>)>, sqlx::Error> = sqlx::query_as(
         "SELECT id, username, email, full_name FROM users WHERE id = $1"
     )
-    .bind(&Uuid::parse_str(&claims.sub).unwrap())
+    .bind(&user_id)
     .fetch_optional(&data.db_pool)
     .await;
 

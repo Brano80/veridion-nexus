@@ -19,6 +19,7 @@ pub struct ModuleDb {
 
 /// Database model for module activations
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(dead_code)]
 pub struct ModuleActivationDb {
     pub id: Uuid,
     pub module_id: Uuid,
@@ -31,6 +32,7 @@ pub struct ModuleActivationDb {
 
 /// Database model for feature flags
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(dead_code)]
 pub struct FeatureFlagDb {
     pub id: Uuid,
     pub name: String,
@@ -75,6 +77,7 @@ pub struct RiskAssessmentDb {
 
 /// Database model for human oversight
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(dead_code)]
 pub struct HumanOversightDb {
     pub id: Uuid,
     pub seal_id: String,
@@ -104,6 +107,7 @@ pub struct DataBreachDb {
 
 /// Database model for user data index
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(dead_code)]
 pub struct UserDataIndexDb {
     pub id: Uuid,
     pub user_id: String,
@@ -113,6 +117,7 @@ pub struct UserDataIndexDb {
 
 /// Database model for encrypted log keys
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(dead_code)]
 pub struct EncryptedLogKeyDb {
     pub id: Uuid,
     pub log_id: String,
@@ -144,6 +149,7 @@ pub struct ConsentRecordDb {
 
 /// Database model for processing activities
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(dead_code)]
 pub struct ProcessingActivityDb {
     pub id: uuid::Uuid,
     pub activity_name: String,
@@ -265,6 +271,7 @@ pub struct SystemHealthStatusDb {
 
 /// Database model for AI energy telemetry
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[allow(dead_code)]
 pub struct AiEnergyTelemetryDb {
     pub id: uuid::Uuid,
     pub seal_id: String,

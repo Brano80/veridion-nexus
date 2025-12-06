@@ -102,6 +102,7 @@ impl AuditService {
     }
 
     /// Log rate limit exceeded
+    #[allow(dead_code)]
     pub async fn log_rate_limit(
         &self,
         identifier: &str,
@@ -127,6 +128,7 @@ impl AuditService {
     }
 
     /// Get audit logs
+    #[allow(dead_code)]
     pub async fn get_audit_logs(
         &self,
         user_id: Option<Uuid>,
@@ -206,6 +208,7 @@ impl AuditService {
 }
 
 #[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)] // Fields are used by sqlx::FromRow for deserialization
 pub struct AuditLog {
     pub id: Uuid,
     pub user_id: Option<Uuid>,

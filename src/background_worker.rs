@@ -165,7 +165,7 @@ impl BackgroundWorker {
                         .fetch_optional(&self.db_pool)
                         .await;
                         
-                        if let Ok(Some(tx_id)) = tx_id_result {
+                        if let Ok(Some(_tx_id)) = tx_id_result {
                             // Note: We can't access key_store here, so we'll just mark it
                             // The actual shredding should be done via the API endpoint
                             let _ = sqlx::query(

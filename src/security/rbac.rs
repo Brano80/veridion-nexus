@@ -50,6 +50,7 @@ impl RbacService {
     }
 
     /// Get all permissions for a user
+    #[allow(dead_code)]
     pub async fn get_user_permissions(
         &self,
         user_id: &str,
@@ -95,7 +96,7 @@ impl RbacService {
 
 /// Middleware helper to check permissions
 pub async fn require_permission(
-    req: &HttpRequest,
+    _req: &HttpRequest,
     rbac: &RbacService,
     claims: &Claims,
     resource: &str,
@@ -111,6 +112,7 @@ pub async fn require_permission(
 }
 
 /// Require specific role
+#[allow(dead_code)]
 pub fn require_role(claims: &Claims, required_role: &str) -> Result<(), HttpResponse> {
     if claims.has_role(required_role) || claims.has_role("admin") {
         Ok(())
@@ -123,6 +125,7 @@ pub fn require_role(claims: &Claims, required_role: &str) -> Result<(), HttpResp
 }
 
 /// Require any of the specified roles
+#[allow(dead_code)]
 pub fn require_any_role(claims: &Claims, roles: &[&str]) -> Result<(), HttpResponse> {
     if claims.has_any_role(roles) || claims.has_role("admin") {
         Ok(())

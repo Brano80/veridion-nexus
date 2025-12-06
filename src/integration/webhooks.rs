@@ -120,8 +120,6 @@ impl Default for WebhookService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compliance_models::WebhookEvent;
-    use serde_json::json;
 
     #[test]
     fn test_signature_generation() {

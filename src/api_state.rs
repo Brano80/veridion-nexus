@@ -12,10 +12,12 @@ pub struct AppState {
     /// Signicat client for eIDAS sealing
     pub signicat: Arc<SignicatClient>,
     /// Database connection pool
+    #[allow(dead_code)]
     pub db: Arc<Database>,
     /// Database pool (for direct access if needed)
     pub db_pool: PgPool,
     /// Deployment configuration
+    #[allow(dead_code)]
     pub deployment: DeploymentConfig,
 }
 

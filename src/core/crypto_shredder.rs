@@ -12,7 +12,9 @@ use std::sync::Mutex;
 #[derive(Debug, Clone)]
 pub struct EncryptedLog {
     pub log_id: String,
+    #[allow(dead_code)]
     pub ciphertext: Vec<u8>,
+    #[allow(dead_code)]
     pub nonce: Vec<u8>,
 }
 
@@ -128,6 +130,7 @@ impl VeridionKeyStore {
     /// 
     /// * `Ok(String)` with the decrypted payload
     /// * `Err(String)` with "GDPR_PURGED: Data key destroyed" if the key was shredded
+    #[allow(dead_code)]
     pub fn read_event(&self, log: &EncryptedLog) -> Result<String, String> {
         // Look up log.log_id in the HashMap
         let wrapped_dek_with_nonce = self

@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use base64::engine::{Engine as _, general_purpose};
+use base64::engine::Engine as _;
 
 /// API Key information (without the actual key)
 #[derive(Debug, Serialize, Deserialize)]
@@ -93,6 +93,7 @@ impl ApiKeyService {
     }
 
     /// Validate API key
+    #[allow(dead_code)]
     pub async fn validate_api_key(
         &self,
         key: &str,
@@ -110,7 +111,7 @@ impl ApiKeyService {
         .fetch_optional(&self.db_pool)
         .await?;
 
-        if let Some((id, name, description, user_id, permissions, expires_at, last_used_at, active, created_at)) = result {
+        if let Some((id, name, description, user_id, permissions, expires_at, _last_used_at, active, created_at)) = result {
             // Check expiration
             if let Some(exp) = expires_at {
                 if exp < Utc::now() {

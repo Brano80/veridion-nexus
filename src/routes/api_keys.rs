@@ -58,7 +58,14 @@ pub async fn create_api_key(
     data: web::Data<AppState>,
 ) -> impl Responder {
     // Authenticate and authorize
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to initialize auth service: {}", e)
+            }));
+        }
+    };
     let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -144,7 +151,14 @@ pub async fn list_api_keys(
     data: web::Data<AppState>,
 ) -> impl Responder {
     // Authenticate
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to initialize auth service: {}", e)
+            }));
+        }
+    };
     let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -203,7 +217,14 @@ pub async fn get_api_key(
     data: web::Data<AppState>,
 ) -> impl Responder {
     // Authenticate
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to initialize auth service: {}", e)
+            }));
+        }
+    };
     let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -277,7 +298,14 @@ pub async fn revoke_api_key(
     data: web::Data<AppState>,
 ) -> impl Responder {
     // Authenticate and authorize
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to initialize auth service: {}", e)
+            }));
+        }
+    };
     let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,

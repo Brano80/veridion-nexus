@@ -1,4 +1,5 @@
 /// EU/EEA country ISO codes whitelist
+#[allow(dead_code)]
 pub const EU_EEA_WHITELIST: &[&str] = &[
     "AT", // Austria
     "BE", // Belgium
@@ -41,6 +42,7 @@ pub const EU_EEA_WHITELIST: &[&str] = &[
 /// - 1.1.1.1 (Cloudflare DNS) -> "US"
 /// - 5.1.2.3 -> "DE" (Germany)
 /// - Default -> "UNKNOWN"
+#[allow(dead_code)]
 pub fn mock_geo_lookup(ip: &str) -> String {
     // Check for private/local IP ranges
     if ip.starts_with("192.") || ip.starts_with("10.") {
@@ -69,6 +71,7 @@ pub fn mock_geo_lookup(ip: &str) -> String {
 /// # Panics
 /// 
 /// Panics with a specific error message if the IP is from a non-sovereign jurisdiction
+#[allow(dead_code)]
 pub fn check_sovereignty(ip_address: &str) -> Result<(), String> {
     let country = mock_geo_lookup(ip_address);
     

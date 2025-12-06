@@ -38,6 +38,7 @@ impl ModuleService {
     }
 
     /// Check if a feature flag is enabled
+    #[allow(dead_code)]
     pub async fn is_feature_enabled(&mut self, feature_name: &str) -> Result<bool, sqlx::Error> {
         let result: Option<bool> = sqlx::query_scalar(
             "SELECT is_feature_enabled($1)"
@@ -142,6 +143,7 @@ impl ModuleService {
     }
 
     /// Get enabled modules by category
+    #[allow(dead_code)]
     pub async fn get_enabled_modules_by_category(
         &self,
         category: &str,
@@ -164,6 +166,7 @@ impl ModuleService {
     }
 
     /// Clear cache (useful after module changes)
+    #[allow(dead_code)]
     pub fn clear_cache(&mut self) {
         self.cache.clear();
     }

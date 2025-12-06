@@ -120,6 +120,7 @@ impl SignicatClient {
     /// # Arguments
     /// 
     /// * `active` - If true, simulates API outage; if false, normal operation
+    #[allow(dead_code)]
     pub fn set_outage(&self, active: bool) {
         *self.simulate_outage.lock().expect("Failed to acquire outage lock") = active;
     }
@@ -258,6 +259,7 @@ impl SignicatClient {
     /// Sync all pending buffered hashes to the API
     /// 
     /// This should be called when the API becomes available again
+    #[allow(dead_code)]
     pub fn sync_pending(&self) {
         let mut buffer = self.offline_buffer.lock().expect("Failed to acquire buffer lock");
         

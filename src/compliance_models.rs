@@ -386,6 +386,7 @@ pub struct RetentionPoliciesResponse {
 
 /// Retention Tracking Response
 #[derive(Serialize, Deserialize, ToSchema)]
+#[allow(dead_code)]
 pub struct RetentionTrackingResponse {
     /// Record type
     pub record_type: String,
@@ -403,6 +404,7 @@ pub struct RetentionTrackingResponse {
 
 /// Get Expiring Records Response
 #[derive(Serialize, Deserialize, ToSchema)]
+#[allow(dead_code)]
 pub struct ExpiringRecordsResponse {
     /// Records expiring soon
     pub expiring_records: Vec<RetentionTrackingResponse>,
@@ -457,6 +459,7 @@ pub struct MonitoringEventResponse {
 
 /// Monitoring Metric Request
 #[derive(Serialize, Deserialize, ToSchema)]
+#[allow(dead_code)]
 pub struct MonitoringMetricRequest {
     /// System ID
     #[schema(example = "AI-SYSTEM-001")]
