@@ -19,6 +19,21 @@ pub struct ComplianceRecord {
     /// Compliance status of the action
     #[schema(example = "COMPLIANT")]
     pub status: String,
+    /// User notification status (EU AI Act Article 13)
+    #[schema(example = true)]
+    pub user_notified: Option<bool>,
+    /// Timestamp when user was notified
+    #[schema(example = "2024-01-15 14:30:05")]
+    pub notification_timestamp: Option<String>,
+    /// Human oversight status (EU AI Act Article 14)
+    #[schema(example = "APPROVED")]
+    pub human_oversight_status: Option<String>, // "PENDING", "APPROVED", "REJECTED"
+    /// Risk assessment level
+    #[schema(example = "MEDIUM")]
+    pub risk_level: Option<String>, // "LOW", "MEDIUM", "HIGH"
+    /// User ID for data subject rights (GDPR)
+    #[schema(example = "user-123")]
+    pub user_id: Option<String>,
 }
 
 /// Generate an Annex IV compliance report PDF
@@ -36,50 +51,22 @@ pub fn generate_report(records: &Vec<ComplianceRecord>, output_path: &str) -> Re
     let (doc, page1, layer1) = PdfDocument::new("Veridion Annex IV Report", Mm(210.0), Mm(297.0), "Layer 1");
     let current_layer = doc.get_page(page1).get_layer(layer1);
 
-    // --- HEADER ---
-    // Dark Bar Background
-    let header_bar = Line {
-        points: vec![
-            (Point::new(Mm(0.0), Mm(280.0)), false),
-            (Point::new(Mm(210.0), Mm(280.0)), false),
-            (Point::new(Mm(210.0), Mm(297.0)), false),
-            (Point::new(Mm(0.0), Mm(297.0)), false),
-        ],
-        is_closed: true,
-        has_fill: true,
-        has_stroke: false,
-        is_clipping_path: false,
-    };
-    current_layer.set_fill_color(Color::Rgb(Rgb::new(0.1, 0.1, 0.2, None))); // Dark Blue/Grey
-    current_layer.add_shape(header_bar);
-
     // Header Text
     let font = doc.add_builtin_font(BuiltinFont::HelveticaBold)
         .map_err(|e| format!("Failed to add font: {:?}", e))?;
-    current_layer.set_fill_color(Color::Rgb(Rgb::new(1.0, 1.0, 1.0, None))); // White Text
-    current_layer.use_text("VERIDION NEXUS | COMPLIANCE REPORT", 18.0, Mm(10.0), Mm(286.0), &font);
+    current_layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None))); // Black Text
+    current_layer.use_text("VERIDION NEXUS | COMPLIANCE REPORT", 18.0, Mm(10.0), Mm(280.0), &font);
     
     let font_reg = doc.add_builtin_font(BuiltinFont::Helvetica)
         .map_err(|e| format!("Failed to add font: {:?}", e))?;
-    current_layer.use_text("EU AI Act - Annex IV Technical Documentation", 10.0, Mm(10.0), Mm(281.0), &font_reg);
+    current_layer.use_text("EU AI Act - Annex IV Technical Documentation", 10.0, Mm(10.0), Mm(270.0), &font_reg);
 
     // --- TABLE HEADERS ---
     current_layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None))); // Black Text
-    let y_start = 260.0;
+    let y_start = 250.0;
     current_layer.use_text("TIMESTAMP", 9.0, Mm(10.0), Mm(y_start), &font);
     current_layer.use_text("AGENT ACTION", 9.0, Mm(50.0), Mm(y_start), &font);
     current_layer.use_text("QUALIFIED SEAL ID (eIDAS)", 9.0, Mm(110.0), Mm(y_start), &font);
-
-    // Draw Line under header
-    current_layer.set_outline_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
-    current_layer.set_outline_thickness(0.5);
-    current_layer.add_shape(Line {
-        points: vec![(Point::new(Mm(10.0), Mm(y_start - 2.0)), false), (Point::new(Mm(200.0), Mm(y_start - 2.0)), false)],
-        is_closed: false,
-        has_fill: false,
-        has_stroke: true,
-        is_clipping_path: false,
-    });
 
     // --- DATA ROWS ---
     let mut y_pos = y_start - 10.0;
@@ -99,17 +86,6 @@ pub fn generate_report(records: &Vec<ComplianceRecord>, output_path: &str) -> Re
             record.seal_id.clone()
         };
         current_layer.use_text(&short_seal, 8.0, Mm(110.0), Mm(y_pos), &font_reg);
-
-        // Grid line
-        current_layer.set_outline_color(Color::Rgb(Rgb::new(0.8, 0.8, 0.8, None))); // Light Grey
-        current_layer.set_outline_thickness(0.3);
-        current_layer.add_shape(Line {
-            points: vec![(Point::new(Mm(10.0), Mm(y_pos - 4.0)), false), (Point::new(Mm(200.0), Mm(y_pos - 4.0)), false)],
-            is_closed: false,
-            has_fill: false,
-            has_stroke: true,
-            is_clipping_path: false,
-        });
 
         y_pos -= 10.0;
     }
@@ -135,18 +111,33 @@ mod tests {
                 action_summary: "Trade Executed".to_string(),
                 seal_id: "QES_SEAL_abc123".to_string(),
                 status: "COMPLETED".to_string(),
+                user_notified: None,
+                notification_timestamp: None,
+                human_oversight_status: None,
+                risk_level: None,
+                user_id: None,
             },
             ComplianceRecord {
                 timestamp: "2024-01-15 11:45:00".to_string(),
                 action_summary: "Data Shredded".to_string(),
                 seal_id: "QES_SEAL_def456".to_string(),
                 status: "COMPLETED".to_string(),
+                user_notified: None,
+                notification_timestamp: None,
+                human_oversight_status: None,
+                risk_level: None,
+                user_id: None,
             },
             ComplianceRecord {
                 timestamp: "2024-01-15 12:00:00".to_string(),
                 action_summary: "Compliance Check".to_string(),
                 seal_id: "QES_SEAL_ghi789".to_string(),
                 status: "VERIFIED".to_string(),
+                user_notified: None,
+                notification_timestamp: None,
+                human_oversight_status: None,
+                risk_level: None,
+                user_id: None,
             },
         ];
         

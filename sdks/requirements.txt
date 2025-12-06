@@ -1,0 +1,31 @@
+# Veridion Nexus SDKs - Requirements
+# Core dependency (always required)
+httpx>=0.24.0
+
+# Platform-specific dependencies (install as needed)
+# Azure AI
+# azure-ai-inference>=1.0.0
+# azure-core>=1.29.0
+
+# AWS Bedrock
+# boto3>=1.28.0
+
+# GCP Vertex AI
+# google-cloud-aiplatform>=1.38.0
+
+# LangChain
+# langchain>=0.1.0
+
+# OpenAI
+# openai>=1.0.0
+
+# HuggingFace
+# transformers>=4.30.0
+# torch>=2.0.0
+
+# Development dependencies
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# mypy>=1.0.0
+

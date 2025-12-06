@@ -2,7 +2,7 @@ use sha2::{Sha256, Digest};
 use reqwest::Client;
 use std::time::SystemTime;
 use rand::RngCore;
-use rand::rng;
+use rand::thread_rng;
 use std::sync::Mutex;
 use std::collections::VecDeque;
 use base64::Engine;
@@ -172,7 +172,7 @@ impl SignicatClient {
         
         // Generate a random ID for the seal
         let mut random_bytes = vec![0u8; 8];
-        rng().fill_bytes(&mut random_bytes);
+        thread_rng().fill_bytes(&mut random_bytes);
         let random_id = random_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>();
         
         // Get current timestamp

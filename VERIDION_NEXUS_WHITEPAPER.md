@@ -5,7 +5,7 @@
 
 ---
 
-**Version 1.0 | January 2025**
+**Version 3.0 | January 2025**
 
 **Confidential - For Investor Review Only**
 
@@ -66,12 +66,21 @@ Veridion Nexus is a Rust-based middleware protocol that enforces compliance thro
 - **Regulatory Tailwind**: EU AI Act enforcement starting 2026 creates urgent demand
 - **High Switching Costs**: Deep integration with customer systems creates lock-in
 - **Scalable SaaS Model**: 85% gross margins, recurring revenue
-- **Proven Technology**: Working MVP with Docker deployment, REST API, and dashboard
+- **Proven Technology**: Production-ready platform with:
+  - **Modular Architecture**: Core/Modules/Integration layers for maximum flexibility
+  - **Compliance Hub Dashboard**: Simplified 6-page core interface with plugin modules
+  - **Module Configuration System**: Enable/disable features via API
+  - **Three Deployment Modes**: Embedded (SDK-first), Proxy (reverse proxy), Full (complete platform)
+  - **Webhook Support**: Real-time event notifications with HMAC-SHA256 signing
+  - **Performance Optimization**: Database indexing, materialized views, connection pooling
+  - **Security Hardening**: JWT, RBAC, API Keys, Audit Logging, Rate Limiting
+  - **AI Platform SDKs**: 6 SDKs for Azure, AWS, GCP, LangChain, OpenAI, HuggingFace
+  - Docker deployment, REST API, PostgreSQL persistence
 
 ## Financial Projections
 
-- **Year 1**: €2.2M ARR, 10-15 customers
-- **Year 3**: €15M ARR, 75 customers, 30% net margin
+- **Year 1**: €5.5M ARR, 42 customers (11 Starter, 20 Professional, 11 Enterprise)
+- **Year 3**: €18M ARR, 90 customers, 30% net margin
 - **Year 5**: €50M+ ARR, market leadership position
 
 ## Investment Ask
@@ -164,31 +173,45 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 
 **Problem**: EU AI Act Article 10 requires data to remain within EU/EEA jurisdictions. Current solutions rely on policy enforcement, which can be bypassed.
 
-**Solution**: Network-level middleware that inspects all outgoing IP addresses and **blocks** connections to non-EU jurisdictions at the network layer.
+**Solution**: Network-level middleware that checks `target_region` parameter in every API request and **blocks** actions targeting non-EU jurisdictions (e.g., US) at the API level. If an agent attempts to send data to the US region, the system automatically returns HTTP 403 Forbidden with status "BLOCKED (SOVEREIGNTY)".
 
 **Technology**:
-- Real-time IP geolocation
-- Network middleware integration
+- Runtime validation of `target_region` parameter in API requests
+- Automatic blocking at the backend level
+- HTTP 403 Forbidden response for non-compliant actions
 - Panic-on-violation architecture (Rust memory safety)
 
 **Compliance**: EU AI Act Article 10 (Data Governance)
+
+**Implementation**: 
+- Backend checks `target_region` in `LogRequest`
+- If `target_region == "US"`, action is marked as `"BLOCKED (SOVEREIGNTY)"`
+- Returns HTTP 403 with empty seal_id and tx_id
 
 ### 2. Crypto-Shredder (GDPR Engine)
 
 **Problem**: GDPR Article 17 requires data erasure, but audit logs must be immutable.
 
-**Solution**: **Envelope Encryption** architecture:
+**Solution**: **Envelope Encryption** architecture with API endpoint for erasure:
 - Data encrypted with unique Data Encryption Keys (DEKs)
 - DEKs wrapped with Master Key
-- To "delete" data: Destroy the DEK (data becomes cryptographically unrecoverable)
+- **POST /shred_data** endpoint accepts `seal_id` and marks record as erased
+- To "delete" data: Record is marked as `"ERASED (Art. 17)"` and `action_summary` is changed to `"[GDPR PURGED] Data Cryptographically Erased"`
 - Logs remain immutable, but data is effectively erased
 
 **Technology**:
 - AES-256-GCM encryption
 - Key management system
+- REST API endpoint `/shred_data` for selective erasure
+- Dashboard UI with button for each record
 - Cryptographic proof of erasure
 
 **Compliance**: GDPR Article 17 (Right to be Forgotten)
+
+**Implementation**:
+- Frontend dashboard provides "🗑️ GDPR SHRED" button for each record
+- Backend endpoint `/shred_data` accepts `{seal_id}` and updates record
+- Erased records are displayed in gray and strikethrough in UI
 
 ### 3. Privacy Bridge (eIDAS Integration)
 
@@ -227,22 +250,109 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 
 ## Technical Architecture
 
+### Modular Architecture
+
+Veridion Nexus is organized into **three distinct layers** for maximum flexibility and adoption:
+
+#### 1. Core Runtime Compliance Engine (Mandatory)
+**Always enabled** - These are the mandatory components that provide core compliance guarantees:
+
+- **Sovereign Lock**: Runtime geofencing for data sovereignty (EU AI Act Article 10)
+- **Crypto-Shredder**: GDPR envelope encryption for Right to be Forgotten (Article 17)
+- **Privacy Bridge**: eIDAS Qualified Electronic Seals (EU 910/2014)
+- **Audit Log Chain**: Immutable audit trail for all compliance actions
+- **Annex IV Compiler**: Automated technical documentation generation (EU AI Act Annex IV)
+
+#### 2. Operational Modules (Optional)
+**Can be enabled/disabled** via Module Configuration API - Pay only for what you need:
+
+- Data Subject Rights (GDPR Articles 15-22)
+- Human Oversight (EU AI Act Article 14)
+- Risk Assessment (EU AI Act Article 9)
+- Breach Management (GDPR Articles 33-34)
+- Consent Management (GDPR Articles 6-7)
+- DPIA Tracking (GDPR Article 35)
+- Retention Policies (GDPR Article 5(1)(e))
+- Post-Market Monitoring (EU AI Act Article 72)
+- Green AI Telemetry (EU AI Act Article 40)
+- AI-BOM (CycloneDX Standard)
+
+#### 3. Integration Layer (Always Available)
+**SDKs and connectors** for seamless integration:
+
+- **AI Platform SDKs**: Azure AI, AWS Bedrock, GCP Vertex, LangChain, OpenAI MCP, HuggingFace
+- **Webhooks**: Real-time event notifications with HMAC-SHA256 signing
+- **Proxy Mode**: Reverse proxy middleware for existing AI infrastructure
+- **REST API**: Complete API for all features
+
 ### Language & Framework
 
-- **Rust**: Memory-safe, high-performance systems programming
-- **Actix-web**: Async HTTP framework for REST API
-- **Docker**: Containerized deployment
-- **PostgreSQL** (planned): Persistent storage for production
+**Backend (Rust)**:
+- **Rust 1.75+**: Systems programming
+- **Actix-web 4**: Async HTTP framework
+- **Tokio**: Async runtime
+- **uuid 1.0**: Unique ID generation
+- **chrono 0.4**: Date and time handling
+- **serde**: Serialization/deserialization
+- **AES-GCM 0.10**: Encryption
+- **SHA-256**: Hashing
+- **printpdf 0.5**: PDF generation
+- **Docker**: Containerization
+- **Swagger/OpenAPI**: API documentation
+- **PostgreSQL 15**: Persistent storage with optimized connection pooling
+- **sqlx 0.7**: Async PostgreSQL driver with compile-time query checking
+
+**Frontend (Next.js/React)**:
+- **Next.js 16**: React framework with App Router
+- **React 19**: Latest React features
+- **TypeScript**: Type-safe JavaScript
+- **Tailwind CSS**: Utility-first CSS framework
+- **React Query**: Data fetching and caching
+- **Recharts**: Interactive data visualization
+- **Lucide React**: Modern icon library
+- **Compliance Hub Dashboard**: Simplified 6-page core interface:
+  1. Compliance Overview (key metrics and recent activity)
+  2. Runtime Logs Explorer (real-time compliance audit trail)
+  3. Human Oversight Queue (approval workflow)
+  4. Data Shredding (GDPR Article 17 crypto-shredding)
+  5. Audit & Reports (Annex IV technical documentation)
+  6. Settings (API keys, webhooks, module configuration)
+- **Plugin Modules**: Additional pages appear automatically when modules are enabled
+- Real-time updates (10-second refresh intervals)
+- Responsive design (mobile-friendly)
+- Dark theme interface
+- Interactive charts and visualizations
+
+**Integration (Python)**:
+- **fastmcp**: Model Context Protocol server
+- **httpx**: Async HTTP client
+- **requests**: HTTP library for Python agents
+- **uipath_agent.py**: Demonstration agent with 50% chance of US actions
+- **veridion_mcp.py**: MCP server for AI models
 
 ### Security Features
 
+- **JWT Authentication**: Token-based authentication with configurable expiration
+- **Role-Based Access Control (RBAC)**: Fine-grained permissions (admin, compliance_officer, auditor, viewer)
+- **API Key Management**: Service-to-service authentication with SHA-256 hashing
+- **Security Audit Logging**: Comprehensive logging of all security events
+- **Rate Limiting**: IP-based throttling (configurable requests per minute)
+- **Security Headers**: CORS, X-Frame-Options, CSP, HSTS, X-XSS-Protection, Referrer-Policy
+- **Production CORS**: Environment-based origin whitelisting
+- **Dependency Scanning**: Automated vulnerability checking (cargo-audit integration)
 - **Non-root execution**: Docker containers run as non-privileged users
 - **Encrypted storage**: All data encrypted at rest
 - **mTLS ready**: Mutual TLS for API authentication
 - **Zero-trust architecture**: No implicit trust assumptions
 
-### Scalability
+### Scalability & Performance
 
+- **Database Indexing**: Optimized indexes on frequently queried columns
+- **Materialized Views**: Pre-computed summaries for fast reporting
+- **Connection Pooling**: Optimized PostgreSQL connection management
+- **Pagination**: Efficient data retrieval with page-based pagination
+- **Background Workers**: Async processing for webhooks, retention deletions, view refreshes
+- **Query Optimization**: Compile-time SQL checking with sqlx
 - **Horizontal scaling**: Stateless API design
 - **Async I/O**: Non-blocking network operations
 - **Cloud-native**: Kubernetes-ready deployment
@@ -250,9 +360,23 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 ### Integration
 
 - **REST API**: Standard HTTP/JSON interface
+- **MCP Server**: Model Context Protocol integration for AI models (`veridion_mcp.py`)
+- **Python Agent SDK**: Demonstration agent (`uipath_agent.py`) with 50% chance of US actions
 - **Swagger UI**: Interactive API documentation
-- **Webhook support** (planned): Real-time compliance notifications
+- **Webhook Support**: Real-time event notifications with:
+  - HMAC-SHA256 signature verification
+  - Retry logic with exponential backoff
+  - Delivery history and status tracking
+  - Event filtering by type
+  - Configurable timeout and retry settings
+- **API Key Management**: Service-to-service authentication endpoints
 - **SDK** (planned): Client libraries for popular languages
+
+**MCP Server Integration**:
+- `veridion_mcp.py` provides `secure_compliance_seal` tool for AI models
+- AI models can call compliance seal before performing high-risk actions
+- Automatic integration with Veridion Nexus API
+- FastMCP framework support
 
 ---
 
@@ -292,12 +416,20 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 
 ## Data Flow
 
-1. **AI Agent** performs action (e.g., credit check, medical diagnosis)
-2. **Sovereign Lock** validates IP geolocation (EU/EEA only)
-3. **Privacy Bridge** hashes payload locally, obtains eIDAS seal
+1. **AI Agent** performs action (e.g., credit check, medical diagnosis) and sends request to `/log_action` with `target_region` parameter
+2. **Sovereign Lock** checks `target_region`:
+   - If `target_region == "US"`: Returns HTTP 403 Forbidden with status `"BLOCKED (SOVEREIGNTY)"`
+   - If `target_region == "EU"` or other allowed region: Continues processing
+3. **Privacy Bridge** hashes payload locally, obtains eIDAS seal (if not blocked)
 4. **Crypto-Shredder** encrypts and stores action with envelope encryption
 5. **Annex IV Compiler** adds record to compliance log
-6. **Response** returned to AI Agent with compliance proof (seal_id, tx_id)
+6. **Response** returned to AI Agent with compliance proof (seal_id, tx_id) or error message
+
+**Crypto-Shredding Flow**:
+1. User clicks "🗑️ GDPR SHRED" button in dashboard for specific record
+2. Frontend sends POST `/shred_data` with `{seal_id}`
+3. Backend finds record and marks it as `"ERASED (Art. 17)"`
+4. Record remains in log, but data is cryptographically erased
 
 ## Security Model
 
@@ -328,6 +460,34 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 - **Scalability**: Horizontal scaling to millions of requests/day
 
 ## Deployment Options
+
+Veridion Nexus supports three deployment modes to fit different use cases:
+
+### 1. Embedded Mode (SDK-First)
+**Best for**: Startups, mid-market companies
+
+- Lightweight client library
+- SDKs integrated directly in application code
+- Minimal infrastructure requirements
+- Pricing: €25K-€75K/year
+
+### 2. Proxy Mode (Reverse Proxy)
+**Best for**: Enterprise with existing AI infrastructure
+
+- Nexus runs as middleware layer
+- Intercepts AI API calls automatically
+- No code changes required
+- Pricing: €100K-€200K/year
+
+### 3. Full Governance Mode
+**Best for**: Enterprise requiring complete control
+
+- Complete platform deployment
+- All modules available
+- Full dashboard and API access
+- Pricing: €200K-€400K/year
+
+### Infrastructure Options
 
 1. **SaaS (Cloud)**: Hosted on EU-based infrastructure
 2. **On-Premise**: Docker containers for air-gapped environments
@@ -449,79 +609,128 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 
 ### Primary Revenue Streams
 
-1. **Annual Subscription License** (80% of revenue)
-   - Tiered pricing by number of AI agents
-   - Includes all core modules
+1. **Annual Subscription License** (75% of revenue)
+   - Tiered pricing aligned with deployment modes
+   - Core modules always included
+   - Operational modules vary by tier
    - Annual commitment required
 
 2. **Transaction-Based Pricing** (15% of revenue)
-   - Per-seal pricing for eIDAS seals
+   - Per-seal pricing for eIDAS seals (€0.10 per seal)
+   - High-volume packages (€50K/year unlimited)
    - Volume discounts for enterprise
-   - Optional add-on for high-volume customers
+   - Optional add-on for all tiers
 
-3. **Professional Services** (5% of revenue)
-   - Implementation consulting
-   - Custom integrations
-   - Compliance audit support
+3. **Professional Services** (7% of revenue)
+   - Implementation consulting (€2,500/day)
+   - Custom integrations (€5,000 per integration)
+   - Compliance audit support (€10,000 per audit)
+
+4. **Add-Ons & Upgrades** (3% of revenue)
+   - Module add-ons (Starter tier: €10K/module)
+   - Deployment upgrades (€25K-€50K)
+   - Regulatory services (€25K-€50K)
 
 ## Pricing Tiers
 
-### Tier 1: Starter (€25,000/year)
+### Tier 1: Starter (€35,000/year)
 
-**Target**: Small to medium enterprises, startups
+**Deployment Mode**: Embedded (SDK-First)
+
+**Target**: Series A fintech/insurtech, 1-10 employees
+
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
+
+**Operational Modules**: Choose 2 included
+- Options: Data Subject Rights, Human Oversight, Risk Assessment, Breach Management
 
 **Includes**:
-- Up to 10 AI agents
-- Basic compliance reporting
+- Up to 3 high-risk AI systems
+- All 6 AI Platform SDKs (Azure, AWS, GCP, LangChain, OpenAI, HuggingFace)
 - Email support (48h SLA)
 - Standard Annex IV templates
 - Community documentation
 
 **Ideal for**: Fintech startups, small healthcare providers
 
-### Tier 2: Professional (€75,000/year)
+### Tier 2: Professional (€120,000/year) ⭐
 
-**Target**: Mid-market companies, growing enterprises
+**Deployment Mode**: Embedded OR Proxy (customer choice)
 
-**Includes**:
-- Up to 50 AI agents
-- Advanced compliance dashboard
-- Priority support (24h SLA)
-- Custom Annex IV templates
-- API access with rate limits
-- Quarterly compliance reviews
+**Target**: Series B-D fintech/insurtech, 50-500 employees
 
-**Ideal for**: Regional banks, mid-size insurance companies
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
 
-### Tier 3: Enterprise (€200,000/year)
-
-**Target**: Large enterprises, multi-nationals
+**Operational Modules**: All 10 modules included
+- Data Subject Rights, Human Oversight, Risk Assessment
+- Breach Management, Consent Management, DPIA Tracking
+- Retention Policies, Post-Market Monitoring
+- Green AI Telemetry, AI-BOM
 
 **Includes**:
-- Unlimited AI agents
-- Full compliance suite
-- Dedicated account manager
+- Up to 15 high-risk AI systems
+- All 6 AI Platform SDKs
+- Slack channel support (12h SLA)
+- Webhook integrations
+- Monthly compliance reports
+- Quarterly business reviews
+
+**Ideal for**: Regional banks, mid-size insurance companies, growing enterprises
+
+### Tier 3: Enterprise (€350,000/year base)
+
+**Deployment Mode**: Full Governance (complete platform)
+
+**Target**: Banks, large insurers, public companies, 1000+ employees
+
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
+
+**Operational Modules**: All included + priority feature requests
+
+**Includes**:
+- Up to 50 high-risk AI systems (first 50 included)
+- Deployment Options: SaaS, On-Premise, or Hybrid
+- All 6 AI Platform SDKs + custom integrations
+- Dedicated Customer Success Manager
+- 24/7 phone support
 - 99.9% SLA guarantee
-- Custom integrations
-- On-premise deployment option
-- White-label capabilities
-- Monthly compliance reviews
+- Custom integrations (40 hours/year included)
+- Regulatory sandbox application support
+- Audit defense package (expert testimony)
+- Private Slack channel with engineering team
 
-**Ideal for**: Tier 1 banks, large healthcare systems
+**Overage**: €12,000 per 10 additional systems (after first 50)
 
-### Tier 4: Regulated Industries (€400,000/year)
+**Ideal for**: Tier 1 banks, large healthcare systems, systemically important institutions
 
-**Target**: Highly regulated sectors (banking, healthcare)
+## Add-Ons (All Tiers)
 
-**Includes**:
-- Everything in Enterprise +
-- Industry-specific certifications (ISO 27001, SOC 2)
-- Legal liability coverage (€1M)
-- Quarterly on-site audits
-- Custom compliance modules
-- Regulatory change management
+### Module Add-Ons (Starter tier only)
+- Additional Operational Module: €10,000/year each
+- (Professional and Enterprise get all modules)
 
-**Ideal for**: Systemically important banks, national healthcare systems
+### Deployment Upgrades
+- Embedded → Proxy Mode: +€25,000/year
+- Embedded/Proxy → Full Governance: +€50,000/year
+
+### Transaction-Based Add-Ons
+- eIDAS Seals: €0.10 per seal (volume discounts available)
+- High-Volume Package: €50,000/year (unlimited seals)
+
+### Professional Services
+- Implementation Consulting: €2,500/day
+- Custom Integration: €5,000 per integration
+- Compliance Audit Support: €10,000 per audit
+
+### Regulatory & Legal
+- Regulatory Sandbox Fast-Track: €25,000 one-time
+- Audit Defense Package: €50,000/year (expert testimony, regulatory support)
 
 ## Unit Economics
 
@@ -533,10 +742,15 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 
 ### Customer Lifetime Value
 
-- **Average Contract Value**: €150K/year
+- **Average Contract Value**: €168K/year (weighted average across tiers)
 - **Customer Lifetime**: 3-5 years
-- **LTV**: €450K-€750K
-- **LTV:CAC Ratio**: 18:1 to 30:1
+- **LTV**: €504K-€840K
+- **LTV:CAC Ratio**: 20:1 to 34:1
+
+**Tier-Specific LTV**:
+- Starter (€35K): €105K-€175K (3-5 years) → LTV:CAC = 4.2:1 to 7:1
+- Professional (€120K): €360K-€600K (3-5 years) → LTV:CAC = 14.4:1 to 24:1
+- Enterprise (€350K+): €1.05M-€1.75M+ (3-5 years) → LTV:CAC = 42:1 to 70:1+
 
 ### Gross Margins
 
@@ -747,9 +961,8 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 ### Support Tiers
 
 - **Starter**: Email support (48h SLA)
-- **Professional**: Priority support (24h SLA)
-- **Enterprise**: Dedicated account manager
-- **Regulated**: On-site support available
+- **Professional**: Slack channel support (12h SLA)
+- **Enterprise**: Dedicated Customer Success Manager, 24/7 phone support, 99.9% SLA guarantee
 
 ### Renewal & Expansion
 
@@ -765,12 +978,18 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 
 ### Revenue Assumptions
 
-- **Q1**: 2 Enterprise customers (€200K each) = €400K
-- **Q2**: 3 Professional + 1 Enterprise = €425K
-- **Q3**: 5 Professional + 2 Enterprise = €575K
-- **Q4**: 8 Professional + 3 Enterprise = €825K
+- **Q1**: 2 Enterprise (€350K each) + 2 Professional (€120K each) = €940K
+- **Q2**: 1 Starter (€35K) + 4 Professional (€120K each) + 2 Enterprise (€350K each) = €1.155M
+- **Q3**: 3 Starter (€35K each) + 6 Professional (€120K each) + 3 Enterprise (€350K each) = €1.455M
+- **Q4**: 5 Starter (€35K each) + 8 Professional (€120K each) + 4 Enterprise (€350K each) = €1.935M
 
-**Total Year 1**: €2.225M ARR
+**Total Year 1**: €5.485M ARR
+
+**Customer Mix**:
+- 11 Starter customers @ €35K = €385K
+- 20 Professional customers @ €120K = €2.4M
+- 11 Enterprise customers @ €350K = €3.85M
+- Add-ons & Services: ~€850K (15% of subscription revenue)
 
 ### Cost Structure
 
@@ -803,10 +1022,10 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 ### Unit Economics
 
 - **CAC**: €25K
-- **LTV**: €450K (3-year average)
-- **LTV:CAC Ratio**: 18:1
+- **LTV**: €504K (3-year average, weighted)
+- **LTV:CAC Ratio**: 20:1
 - **Gross Margin**: 85%
-- **Net Margin Year 1**: -15% (investment phase)
+- **Net Margin Year 1**: -10% (investment phase, improved with higher ARR)
 
 ## Year 2-3 Projections
 
@@ -828,7 +1047,7 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 
 | Year | ARR | Customers | OpEx | Net Margin | Profit |
 |------|-----|-----------|------|------------|--------|
-| 1 | €2.2M | 15 | €1.55M | -15% | -€330K |
+| 1 | €5.5M | 42 | €2.0M | -10% | -€200K |
 | 2 | €6.5M | 35 | €3.2M | 15% | €975K |
 | 3 | €15M | 75 | €6.5M | 30% | €4.5M |
 | 4 | €30M | 150 | €12M | 35% | €10.5M |
@@ -1076,29 +1295,269 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 
 ### API Endpoints
 
-**POST /log_action**
-- Logs a high-risk AI action through compliance pipeline
-- Returns: `{status, seal_id, tx_id}`
+#### Core Endpoints
 
-**GET /logs**
+**POST /api/v1/log_action**
+- Logs a high-risk AI action through compliance pipeline
+- Request body: `{agent_id, action, payload, target_region?, user_notified?, notification_timestamp?, user_id?, requires_human_oversight?, inference_time_ms?, gpu_power_rating_watts?, cpu_power_rating_watts?, energy_estimate_kwh?, carbon_grams?, system_id?, model_name?, model_version?, hardware_type?}`
+- Checks `target_region` - if "US", "CN", or "RU", blocks action (HTTP 403)
+- Automatically tracks energy consumption and carbon footprint (EU AI Act Article 40)
+- Returns: `{status, seal_id, tx_id, risk_level?, human_oversight_status?}`
+- Status can be: `"COMPLIANT"` or `"BLOCKED (SOVEREIGNTY)"`
+
+**GET /api/v1/logs**
 - Retrieves compliance log history
 - Returns: `Array<ComplianceRecord>`
+- Most recent records are at the beginning of the list
 
-**GET /download_report**
+**POST /api/v1/shred_data**
+- Erases specific record according to GDPR Article 17
+- Request body: `{seal_id}`
+- Marks record as `"ERASED (Art. 17)"`
+- Returns: `{status: "SUCCESS"}` or `{status: "NOT_FOUND"}`
+
+**GET /api/v1/download_report**
 - Downloads Annex IV compliance report as PDF
 - Returns: PDF file
+
+**POST /api/v1/revoke_access**
+- Activates system lockdown mode, blocks all new agent actions
+- Returns: `{status: "SUCCESS"}`
+
+#### Priority 1: Data Subject Rights (GDPR Articles 15-22)
+
+**GET /api/v1/data_subject/{user_id}/access**
+- Right of access (GDPR Article 15)
+- Returns: `{records: Array<DataSubjectRecord>, format, exported_at}`
+
+**GET /api/v1/data_subject/{user_id}/export**
+- Right to data portability (GDPR Article 20)
+- Returns: Same format as access endpoint
+
+**PUT /api/v1/data_subject/{user_id}/rectify**
+- Right to rectification (GDPR Article 16)
+- Request body: `{seal_id, corrected_data}`
+- Returns: `{status: "SUCCESS"}`
+
+#### Priority 1: Human Oversight (EU AI Act Article 14)
+
+**POST /api/v1/action/{seal_id}/require_approval**
+- Requires human oversight for an action
+- Returns: `{status, oversight_id}`
+
+**POST /api/v1/action/{seal_id}/approve**
+- Approves an action requiring human oversight
+- Request body: `{reviewer_id, notes?}`
+- Returns: `{status: "APPROVED"}`
+
+**POST /api/v1/action/{seal_id}/reject**
+- Rejects an action requiring human oversight
+- Request body: `{reviewer_id, reason}`
+- Returns: `{status: "REJECTED"}`
+
+#### Priority 1: Risk Assessment (EU AI Act Article 9)
+
+**GET /api/v1/risk_assessment/{seal_id}**
+- Gets risk assessment for a specific action
+- Returns: `{seal_id, risk_level, risk_factors, mitigation_actions, assessed_at}`
+
+**GET /api/v1/risks**
+- Gets all risk assessments
+- Returns: `Array<RiskAssessment>`
+
+#### Priority 1: Data Breach Management (GDPR Articles 33-34)
+
+**POST /api/v1/breach_report**
+- Reports a data breach
+- Request body: `{breach_type, description, affected_records_count, detected_at, user_notified?}`
+- Returns: `{breach_id, status, reported_at}`
+
+**GET /api/v1/breaches**
+- Lists all data breaches
+- Returns: `Array<DataBreachReport>`
+
+#### Priority 2: Consent Management (GDPR Articles 6, 7)
+
+**POST /api/v1/consent**
+- Grants user consent for data processing
+- Request body: `{user_id, consent_type, purpose, legal_basis, expires_at?}`
+- Returns: `{consent_id, status, granted_at}`
+
+**POST /api/v1/consent/withdraw**
+- Withdraws user consent
+- Request body: `{user_id, consent_type}`
+- Returns: `{status: "WITHDRAWN"}`
+
+**GET /api/v1/consent/{user_id}**
+- Gets all consents for a user
+- Returns: `{user_id, consents: Array<ConsentRecord>}`
+
+#### Priority 2: DPIA Tracking (GDPR Article 35)
+
+**POST /api/v1/dpia**
+- Creates a Data Protection Impact Assessment
+- Request body: `{dpia_id, system_name, processing_activities, risk_assessment, mitigation_measures}`
+- Returns: `{dpia_id, status, created_at}`
+
+**PUT /api/v1/dpia/{dpia_id}**
+- Updates a DPIA
+- Request body: `{status?, reviewed_by?, review_notes?}`
+- Returns: `{dpia_id, status, updated_at}`
+
+**GET /api/v1/dpias**
+- Gets all DPIAs
+- Returns: `Array<DpiaRecord>`
+
+#### Priority 2: Retention Period Automation (GDPR Article 5(1)(e))
+
+**POST /api/v1/retention/policy**
+- Creates a retention policy
+- Request body: `{policy_name, retention_period_days, description?}`
+- Returns: `{policy_id, status}`
+
+**POST /api/v1/retention/assign**
+- Assigns a retention policy to a record
+- Request body: `{record_type, record_id, policy_id, expires_at?}`
+- Returns: `{assignment_id, status}`
+
+**GET /api/v1/retention/status/{record_type}/{record_id}**
+- Gets retention status for a record
+- Returns: `{record_id, policy_name, expires_at, status}`
+
+**GET /api/v1/retention/policies**
+- Gets all retention policies
+- Returns: `Array<RetentionPolicy>`
+
+**POST /api/v1/retention/execute_deletions**
+- Executes automatic deletion of expired records
+- Returns: `{deleted_count, deleted_records: Array<DeletedRecord>}`
+
+#### Priority 2: Post-Market Monitoring (EU AI Act Article 72)
+
+**POST /api/v1/monitoring/event**
+- Creates a monitoring event (incident, anomaly, etc.)
+- Request body: `{event_type, severity, system_id, description, system_version?}`
+- Returns: `{event_id, status, detected_at}`
+
+**PUT /api/v1/monitoring/event/{event_id}**
+- Updates event resolution status
+- Request body: `{resolution_status, resolved_by?, resolution_notes?}`
+- Returns: `{event_id, resolution_status, resolved_at}`
+
+**GET /api/v1/monitoring/events**
+- Gets all monitoring events (with optional filters)
+- Query params: `?system_id={system_id}`
+- Returns: `{events: Array<MonitoringEvent>, total_count}`
+
+**GET /api/v1/monitoring/health/{system_id}**
+- Gets system health status
+- Returns: `{system_id, overall_status, compliance_status, active_incidents_count, critical_incidents_count, performance_score?, compliance_score?, last_health_check}`
+
+#### Enterprise Features: AI-BOM Export (CycloneDX v1.5)
+
+**GET /api/v1/ai_bom/{system_id}**
+- Exports AI system Bill of Materials in CycloneDX format
+- Query params: `?format=cyclonedx` (default)
+- Returns: `CycloneDxBom` (JSON) with AI/ML-BOM components, dependencies, and compliance metadata
+
+**POST /api/v1/ai_bom/inventory**
+- Registers AI system in inventory for BOM export
+- Request body: `{system_id, system_name, system_version?, system_type, description?, vendor?, license?, source_url?, checksum_sha256?, dependencies?, training_data_info?, risk_level?, dpia_id?}`
+- Returns: `{status: "SUCCESS", system_id}`
+
+#### Webhook Support
+
+**POST /api/v1/webhooks**
+- Creates a webhook endpoint for real-time event notifications
+- Request body: `{endpoint_url, event_types, secret_key?, retry_count?, timeout_seconds?}`
+- Returns: `{id, endpoint_url, event_types, active, retry_count, timeout_seconds, created_at}`
+- Events: `compliance.created`, `breach.detected`, `oversight.required`, `retention.expired`, `monitoring.incident`
+
+**GET /api/v1/webhooks**
+- Lists all webhook endpoints (with pagination)
+- Query params: `?page={page}&limit={limit}`
+- Returns: `{endpoints: Array<WebhookEndpoint>, total_count}`
+
+**PUT /api/v1/webhooks/{id}**
+- Updates a webhook endpoint configuration
+- Request body: `{endpoint_url?, event_types?, active?, retry_count?, timeout_seconds?}`
+- Returns: Updated webhook endpoint
+
+**DELETE /api/v1/webhooks/{id}**
+- Deletes a webhook endpoint
+- Returns: `{status: "SUCCESS"}`
+
+**GET /api/v1/webhooks/{id}/deliveries**
+- Gets delivery history for a webhook endpoint
+- Query params: `?page={page}&limit={limit}`
+- Returns: `{deliveries: Array<WebhookDelivery>, total_count}`
+- Features: HMAC-SHA256 signature verification, retry logic with exponential backoff
+
+#### API Key Management
+
+**POST /api/v1/api_keys**
+- Creates a new API key for service-to-service authentication
+- Request body: `{name, description?, permissions, expires_at?}`
+- Returns: `{api_key, key_info, message}` (key shown only once)
+- Requires: `api_key.write` permission
+
+**GET /api/v1/api_keys**
+- Lists all API keys (users see only their own, admins see all)
+- Returns: `{api_keys: Array<ApiKeyInfo>, total_count}`
+
+**GET /api/v1/api_keys/{id}**
+- Gets API key details (without the actual key)
+- Returns: `{id, name, description, user_id, permissions, expires_at, last_used_at, active, created_at}`
+
+**DELETE /api/v1/api_keys/{id}**
+- Revokes an API key
+- Returns: `{status: "SUCCESS"}`
+- Requires: Ownership or `api_key.delete` permission
+
+#### Authentication & Authorization
+
+**POST /api/v1/auth/login**
+- Authenticates user and returns JWT token
+- Request body: `{username, password}`
+- Returns: `{token, user: {id, username, email, full_name, roles}}`
+
+**POST /api/v1/auth/register**
+- Registers a new user (admin only)
+- Request body: `{username, email, password, full_name?}`
+- Returns: `{user, message}`
+
+**GET /api/v1/auth/me**
+- Gets current authenticated user information
+- Requires: Valid JWT token in `Authorization: Bearer <token>` header
+- Returns: `{id, username, email, full_name, roles}`
+
+#### Green AI Telemetry (EU AI Act Article 40)
+
+Energy and carbon tracking is integrated into `POST /api/v1/log_action`:
+- `inference_time_ms`: Inference time in milliseconds
+- `gpu_power_rating_watts`: GPU power rating (default: 250W)
+- `cpu_power_rating_watts`: CPU power rating
+- `energy_estimate_kwh`: Pre-calculated energy (optional, auto-calculated if not provided)
+- `carbon_grams`: Pre-calculated carbon footprint (optional, auto-calculated using EU average: 475 g CO2/kWh)
+- `system_id`, `model_name`, `model_version`, `hardware_type`: For tracking and reporting
+
+Energy calculation: `(GPU + CPU power) * time_in_hours / 1000 = kWh`  
+Carbon calculation: `energy_kwh * 475.0 = grams CO2`
 
 ### Compliance Modules
 
 **Sovereign Lock**:
-- IP geolocation validation
-- EU/EEA whitelist enforcement
-- Network-level blocking
+- Runtime validation of `target_region` parameter in API requests
+- Automatic blocking of actions targeting US or other non-sovereign jurisdictions
+- HTTP 403 Forbidden response for non-compliant actions
+- Backend-level blocking before data processing
 
 **Crypto-Shredder**:
 - AES-256-GCM encryption
 - Envelope encryption (DEK + Master Key)
-- Key destruction for GDPR compliance
+- REST API endpoint `/shred_data` for selective erasure by `seal_id`
+- Dashboard UI with button for each record
+- Records marked as `"ERASED (Art. 17)"` remain in log, but data is cryptographically erased
 
 **Privacy Bridge**:
 - SHA-256 local hashing
@@ -1110,34 +1569,100 @@ Veridion Nexus enforces compliance at the network level, making it **physically 
 - Compliance record tracking
 - Legally binding format
 
-## B. Customer Testimonials
+**Webhook Service**:
+- Real-time event delivery with HMAC-SHA256 signing
+- Exponential backoff retry logic (configurable retry count)
+- Delivery status tracking (pending, success, failed)
+- Event filtering by type
+- Background worker for async delivery
+
+**Security & Access Control**:
+- JWT-based authentication with configurable expiration
+- Role-Based Access Control (RBAC) with fine-grained permissions
+- API Key management for service-to-service authentication
+- Security audit logging for all access attempts
+- Rate limiting (IP-based, configurable thresholds)
+- Security headers (CORS, CSP, HSTS, X-Frame-Options, etc.)
+- Production-ready CORS configuration (environment-based origin whitelisting)
+
+## B. MCP Server and Python Integration
+
+### Model Context Protocol (MCP) Server
+
+Veridion Nexus provides an MCP server (`veridion_mcp.py`) for integration with AI models through the Model Context Protocol. This enables AI models to automatically call compliance seal before performing high-risk actions.
+
+**Features**:
+- Tool `secure_compliance_seal`: AI models can call this tool before performing an action
+- Automatic integration with Veridion Nexus API
+- FastMCP framework support
+- Windows-compatible (no emoji in outputs)
+
+**Usage**:
+```python
+# AI model can call:
+result = await secure_compliance_seal(
+    agent_id="Credit-Bot-v1",
+    action_type="credit_approval",
+    sensitive_data="Customer ID: 12345"
+)
+```
+
+### Python Agent Demonstration
+
+The project includes a demonstration Python agent (`uipath_agent.py`) that simulates a high-risk AI agent with a 50% chance of attempting to send data to the US region.
+
+**Features**:
+- Simulation of various action types (EU and US)
+- Automatic testing of Sovereign Lock enforcement
+- Real-time feedback on compliance status
+- Demonstration of blocking non-compliant actions
+
+**Actions**:
+- `Credit Check - Client EU` (EU - allowed)
+- `GDPR Audit Scan` (EU - allowed)
+- `UPLOAD DATA TO AWS US-EAST` (US - blocked)
+- `SEND ANALYTICS TO GOOGLE NY` (US - blocked)
+
+## C. Customer Testimonials
 
 *[To be added after beta program]*
 
-## C. Case Studies
+## D. Case Studies
 
 *[To be added after customer deployments]*
 
-## D. Regulatory Compliance
+## E. Regulatory Compliance
 
 ### EU AI Act Compliance
 
-- **Article 10**: Data Governance (Sovereign Lock)
-- **Article 13-14**: Transparency & Human Oversight (Annex IV Compiler)
-- **Annex IV**: Technical Documentation (Automated reports)
+- **Article 9**: Risk management system (Automated risk assessment)
+- **Article 10**: Data Governance (Sovereign Lock - geofencing)
+- **Article 13**: Transparency requirements (User notification tracking)
+- **Article 14**: Human oversight (Approval/rejection workflow)
+- **Article 40**: Energy efficiency reporting (Green AI Telemetry)
+- **Article 72**: Post-market monitoring (System health and incident tracking)
+- **Annex IV**: Technical Documentation (Automated PDF reports)
 
 ### GDPR Compliance
 
+- **Article 5(1)(e)**: Storage limitation (Retention period automation)
+- **Article 6**: Lawfulness of processing (Consent management)
+- **Article 7**: Conditions for consent (Consent tracking and withdrawal)
+- **Article 15**: Right of access (Data subject access requests)
+- **Article 16**: Right to rectification (Data correction)
 - **Article 17**: Right to be Forgotten (Crypto-Shredder)
+- **Article 20**: Right to data portability (Data export)
 - **Article 25**: Data Protection by Design (Technical enforcement)
 - **Article 32**: Security of Processing (Encryption, access controls)
+- **Article 33-34**: Data breach notification (Breach reporting and tracking)
+- **Article 35**: Data Protection Impact Assessment (DPIA tracking and management)
 
 ### eIDAS Compliance
 
 - **Article 36**: Qualified Electronic Seals (Privacy Bridge)
 - **Article 37**: Requirements for Qualified Electronic Seals
 
-## E. Contact Information
+## F. Contact Information
 
 **Veridion Nexus**
 
@@ -1147,8 +1672,9 @@ Address: [To be added]
 
 ---
 
-**Document Version**: 1.0  
+**Document Version**: 3.0  
 **Date**: January 2025  
+**Update**: Added Webhook Support (real-time event notifications with HMAC signing and retry logic), Comprehensive Dashboard (14 fully implemented pages with real-time updates and interactive visualizations), Performance Optimization (database indexing, materialized views, connection pooling, pagination, background workers), Security Hardening (JWT authentication, RBAC with fine-grained permissions, API Key Management, Security Audit Logging, Rate Limiting, Security Headers, Production CORS configuration, Dependency Vulnerability Scanning), and Production Deployment Guide  
 **Confidentiality**: This document contains confidential and proprietary information. Distribution is restricted to authorized recipients only.
 
 ---

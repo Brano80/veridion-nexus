@@ -8,9 +8,9 @@ RUN cargo new --bin veridion-nexus
 WORKDIR /app/veridion-nexus
 
 # Copy dependency files
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock* ./
 
-# Build dependencies (this layer will be cached if Cargo.toml/Cargo.lock don't change)
+# Build dependencies (this layer will be cached if Cargo.toml doesn't change)
 RUN cargo build --release
 RUN rm src/*.rs
 
@@ -27,7 +27,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl-dev \
+    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user for security
@@ -49,4 +49,3 @@ EXPOSE 8080
 
 # Run the binary
 CMD ["./veridion-nexus"]
-

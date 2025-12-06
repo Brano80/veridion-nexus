@@ -1,150 +1,160 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import DashboardLayout from "./components/DashboardLayout";
+import { useQuery } from "@tanstack/react-query";
+import {
+  Activity,
+  Shield,
+  AlertTriangle,
+  CheckCircle,
+  Clock,
+  TrendingUp,
+} from "lucide-react";
 
-interface LogEntry {
-  timestamp: string;
-  action_summary: string;
-  seal_id: string;
-  status: string;
+const API_BASE = "http://127.0.0.1:8080/api/v1";
+
+async function fetchStats() {
+  const [logs, risks, breaches, monitoring] = await Promise.all([
+    fetch(`${API_BASE}/logs`).then((r) => r.json()),
+    fetch(`${API_BASE}/risks`).then((r) => r.json()),
+    fetch(`${API_BASE}/breaches`).then((r) => r.json()),
+    fetch(`${API_BASE}/monitoring/events`).then((r) => r.json()),
+  ]);
+
+  const highRisks = risks.filter((r: any) => r.risk_level === "HIGH").length;
+  const openBreaches = breaches.filter((b: any) => b.status === "REPORTED").length;
+  const openEvents = monitoring.events?.filter(
+    (e: any) => e.resolution_status === "OPEN"
+  ).length || 0;
+
+  return {
+    totalRecords: logs.length,
+    highRisks,
+    openBreaches,
+    openEvents,
+    recentActivity: logs.slice(0, 5),
+  };
 }
 
 export default function Home() {
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isRevoked, setIsRevoked] = useState(false);
+  const { data: stats, isLoading } = useQuery({
+    queryKey: ["dashboard-stats"],
+    queryFn: fetchStats,
+  });
 
-  // Fetch data
-  useEffect(() => {
-    const fetchLogs = async () => {
-      try {
-        const res = await fetch('http://127.0.0.1:8080/logs');
-        if (res.ok) {
-          const data = await res.json();
-          // Najnovšie hore (backend už vracia najnovšie na začiatku)
-          setLogs(data);
-        }
-      } catch (error) {
-        console.error("Failed to fetch logs:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
+  if (isLoading) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center h-screen">
+          <div className="text-slate-400">Loading...</div>
+        </div>
+      </DashboardLayout>
+    );
+  }
 
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 1000); // Rýchlejší refresh (1s) pre lepší efekt
-    return () => clearInterval(interval);
-  }, []);
-
-  const handleDownload = () => {
-    window.open('http://127.0.0.1:8080/download_report', '_blank');
-  };
-
-  const handleRevoke = async () => {
-    if (confirm("⚠️ CRITICAL WARNING: Are you sure you want to revoke all Identity Keys?")) {
-        setIsRevoked(true);
-        alert("✅ SUCCESS: Backend confirmed Lockdown. Agent Isolated.");
-        try { await fetch('http://127.0.0.1:8080/revoke_access', { method: 'POST' }); } catch (e) {}
-    }
-  };
-
-  // --- NOVÁ FUNKCIA PRE MAZANIE RIADKU ---
-  const handleShredRow = async (sealId: string) => {
-    if(!confirm("GDPR REQUEST: Permanently shred data for this transaction?")) return;
-
-    // 1. Optimistický update UI (aby to zmizlo hneď)
-    setLogs(prevLogs => prevLogs.map(log => {
-        if (log.seal_id === sealId) {
-            return { ...log, action_summary: "⚡ SHREDDING...", status: "PROCESSING" };
-        }
-        return log;
-    }));
-
-    // 2. Volanie Backend API
-    try {
-        await fetch('http://127.0.0.1:8080/shred_data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ seal_id: sealId })
-        });
-    } catch (e) {
-        console.error("Shred failed", e);
-    }
-  };
+  const statCards = [
+    {
+      title: "Total Records",
+      value: stats?.totalRecords || 0,
+      icon: Activity,
+      color: "emerald",
+    },
+    {
+      title: "High Risk Items",
+      value: stats?.highRisks || 0,
+      icon: AlertTriangle,
+      color: "red",
+    },
+    {
+      title: "Open Breaches",
+      value: stats?.openBreaches || 0,
+      icon: Shield,
+      color: "orange",
+    },
+    {
+      title: "Monitoring Events",
+      value: stats?.openEvents || 0,
+      icon: Clock,
+      color: "blue",
+    },
+  ];
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-200 p-10 font-mono">
-      {/* Header */}
-      <div className="flex justify-between items-center mb-10 border-b border-slate-800 pb-4">
+    <DashboardLayout>
+      <div className="space-y-6">
+        {/* Header */}
         <div>
-          <h1 className="text-3xl font-bold text-emerald-400 tracking-wider">VERIDION NEXUS</h1>
-          <p className="text-slate-500 text-sm mt-1">Sovereign Governance Console | v1.0.0</p>
+          <h1 className="text-3xl font-bold text-white mb-2">Dashboard</h1>
+          <p className="text-slate-400">
+            Overview of compliance and monitoring activities
+          </p>
         </div>
-        <div className="flex gap-4 items-center">
-          <div className={`flex items-center gap-2 px-3 py-1 border rounded text-xs transition-colors ${
-              isRevoked ? "bg-red-900/30 border-red-800 text-red-500" : "bg-emerald-900/30 border-emerald-800 text-emerald-400"
-          }`}>
-            <span className={`w-2 h-2 rounded-full ${isRevoked ? "bg-red-500" : "bg-emerald-500 animate-pulse"}`}></span>
-            {isRevoked ? "SYSTEM LOCKDOWN" : "SYSTEM OPERATIONAL"}
-          </div>
-          
 
-          <button onClick={handleDownload} className="bg-blue-900/50 hover:bg-blue-800/80 text-blue-400 border border-blue-800 px-4 py-2 rounded text-sm font-bold transition-all">
-            📄 DOWNLOAD ANNEX IV
-          </button>
-          <button onClick={handleRevoke} disabled={isRevoked} className={`px-6 py-2 rounded text-sm font-bold transition-all border ${
-                isRevoked ? "bg-slate-800 border-slate-700 text-slate-500" : "bg-red-900/50 hover:bg-red-800/80 text-red-400 border border-red-800"
-            }`}>
-            {isRevoked ? "⛔ KEYS REVOKED" : "REVOKE AGENT KEYS"}
-          </button>
+        {/* Stats Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {statCards.map((stat) => {
+            const Icon = stat.icon;
+            const colorClasses = {
+              emerald: "bg-emerald-900/20 border-emerald-800 text-emerald-400",
+              red: "bg-red-900/20 border-red-800 text-red-400",
+              orange: "bg-orange-900/20 border-orange-800 text-orange-400",
+              blue: "bg-blue-900/20 border-blue-800 text-blue-400",
+            };
+            return (
+              <div
+                key={stat.title}
+                className={`p-6 rounded-lg border ${colorClasses[stat.color as keyof typeof colorClasses]}`}
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <Icon size={24} />
+                  <TrendingUp size={16} className="opacity-50" />
+                </div>
+                <div className="text-3xl font-bold mb-1">{stat.value}</div>
+                <div className="text-sm opacity-75">{stat.title}</div>
+              </div>
+            );
+          })}
         </div>
-      </div>
 
-      {/* Data Table */}
-      <div className={`bg-slate-900 border rounded-lg overflow-hidden shadow-2xl transition-all ${isRevoked ? "border-red-900 opacity-50 grayscale" : "border-slate-800"}`}>
-        <table className="w-full text-left text-sm">
-          <thead className="bg-slate-950 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
-            <tr>
-              <th className="p-4 text-left">Timestamp</th>
-              <th className="p-4 text-left">Agent Action</th>
-              <th className="p-4 text-left">Qualified Seal ID (eIDAS)</th>
-              <th className="p-4 text-left">Status</th>
-              <th className="p-4 text-right">GDPR</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800">
-            {logs.map((log, i) => (
-                <tr key={i} className="border-b border-slate-800 hover:bg-slate-900/50 transition-colors">
-                  <td className="p-4 font-mono text-slate-400">{log.timestamp}</td>
-                  <td className={`p-4 font-medium ${log.status.includes("ERASED") ? "text-slate-600 line-through italic" : "text-white"}`}>
-                    {log.action_summary}
-                  </td>
-                  <td className="p-4 font-mono text-xs text-slate-500">{log.seal_id}</td>
-                  <td className="p-4">
-                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold border ${
-                        log.status.includes("BLOCKED") || log.status === "REVOKED" ? "bg-red-950 text-red-400 border-red-900" :
-                        log.status.includes("ERASED") ? "bg-slate-800 text-slate-500 border-slate-600" :
-                        "bg-emerald-950 text-emerald-400 border-emerald-900"
-                    }`}>
-                      {log.status}
-                    </span>
-                  </td>
-                  <td className="p-4 text-right">
-                    {!log.status.includes("ERASED") && !log.status.includes("BLOCKED") && (
-                        <button 
-                            onClick={() => handleShredRow(log.seal_id)}
-                            className="text-slate-500 hover:text-red-400 transition-colors p-2 hover:bg-red-900/20 rounded"
-                            title="Crypto-Shred this record"
-                        >
-                            🗑️
-                        </button>
-                    )}
-                  </td>
-                </tr>
+        {/* Recent Activity */}
+        <div className="bg-slate-900 border border-slate-800 rounded-lg p-6">
+          <h2 className="text-xl font-bold text-white mb-4">Recent Activity</h2>
+          <div className="space-y-3">
+            {stats?.recentActivity?.map((log: any, i: number) => (
+              <div
+                key={i}
+                className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg border border-slate-700"
+              >
+                <div className="flex items-center gap-3">
+                  <CheckCircle
+                    size={16}
+                    className={
+                      log.status.includes("BLOCKED")
+                        ? "text-red-400"
+                        : "text-emerald-400"
+                    }
+                  />
+                  <div>
+                    <div className="text-sm font-medium text-white">
+                      {log.action_summary}
+                    </div>
+                    <div className="text-xs text-slate-500">{log.timestamp}</div>
+                  </div>
+                </div>
+                <span
+                  className={`px-2 py-1 rounded text-xs font-medium ${
+                    log.status.includes("BLOCKED")
+                      ? "bg-red-900/30 text-red-400"
+                      : "bg-emerald-900/30 text-emerald-400"
+                  }`}
+                >
+                  {log.status}
+                </span>
+              </div>
             ))}
-          </tbody>
-        </table>
+          </div>
+        </div>
       </div>
-    </main>
+    </DashboardLayout>
   );
 }

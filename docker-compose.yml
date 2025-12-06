@@ -1,6 +1,24 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: veridion-nexus-db
+    environment:
+      POSTGRES_USER: veridion
+      POSTGRES_PASSWORD: veridion_password
+      POSTGRES_DB: veridion_nexus
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veridion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   veridion-nexus-api:
     build:
       context: .
@@ -10,7 +28,12 @@ services:
       - "8080:8080"
     environment:
       - RUST_LOG=info
+      - DATABASE_URL=postgresql://veridion:veridion_password@postgres:5432/veridion_nexus
+      - VERIDION_MASTER_KEY=${VERIDION_MASTER_KEY:-default_master_key_change_in_production}
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
-    # Healthcheck removed - would require curl installation
-    # You can add it later if needed by installing curl in Dockerfile
 
+volumes:
+  postgres_data:

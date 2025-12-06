@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veridion-nexus-sdks"
+version = "0.1.0"
+description = "Veridion Nexus SDKs for AI platforms - Compliance integration for Azure AI, AWS Bedrock, GCP Vertex, LangChain, OpenAI, and HuggingFace"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Veridion Nexus", email = "support@veridion.nexus"}
+]
+keywords = ["compliance", "gdpr", "eu-ai-act", "ai", "ml", "azure", "aws", "gcp", "openai", "langchain", "huggingface"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "httpx>=0.24.0",
+]
+
+[project.optional-dependencies]
+azure = [
+    "azure-ai-inference>=1.0.0",
+    "azure-core>=1.29.0",
+]
+aws = [
+    "boto3>=1.28.0",
+]
+gcp = [
+    "google-cloud-aiplatform>=1.38.0",
+]
+langchain = [
+    "langchain>=0.1.0",
+]
+openai = [
+    "openai>=1.0.0",
+]
+huggingface = [
+    "transformers>=4.30.0",
+    "torch>=2.0.0",
+]
+all = [
+    "azure-ai-inference>=1.0.0",
+    "azure-core>=1.29.0",
+    "boto3>=1.28.0",
+    "google-cloud-aiplatform>=1.38.0",
+    "langchain>=0.1.0",
+    "openai>=1.0.0",
+    "transformers>=4.30.0",
+    "torch>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/veridion-nexus/sdks"
+Documentation = "https://docs.veridion.nexus"
+Repository = "https://github.com/veridion-nexus/sdks"
+Issues = "https://github.com/veridion-nexus/sdks/issues"
+

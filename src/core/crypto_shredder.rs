@@ -3,7 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use rand::RngCore;
-use rand::rng;
+use rand::thread_rng;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -65,7 +65,7 @@ impl VeridionKeyStore {
     pub fn log_event(&self, payload: &str) -> EncryptedLog {
         // Generate a random 256-bit (32-byte) DEK
         let mut dek = vec![0u8; 32];
-        rng().fill_bytes(&mut dek);
+        thread_rng().fill_bytes(&mut dek);
         
         // Create AES-256-GCM cipher with the DEK
         let cipher = Aes256Gcm::new_from_slice(&dek)
@@ -73,7 +73,7 @@ impl VeridionKeyStore {
         
         // Generate a random 96-bit (12-byte) nonce for GCM
         let mut nonce_bytes = vec![0u8; 12];
-        rng().fill_bytes(&mut nonce_bytes);
+        thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
         
         // Encrypt the payload using the DEK
@@ -87,7 +87,7 @@ impl VeridionKeyStore {
         
         // Generate a nonce for wrapping the DEK
         let mut wrap_nonce_bytes = vec![0u8; 12];
-        rng().fill_bytes(&mut wrap_nonce_bytes);
+        thread_rng().fill_bytes(&mut wrap_nonce_bytes);
         let wrap_nonce = Nonce::from_slice(&wrap_nonce_bytes);
         
         // Encrypt the DEK (wrap it)
@@ -102,7 +102,7 @@ impl VeridionKeyStore {
         
         // Generate a unique log_id using random bytes
         let mut log_id_bytes = vec![0u8; 16];
-        rng().fill_bytes(&mut log_id_bytes);
+        thread_rng().fill_bytes(&mut log_id_bytes);
         let log_id = format!("log_{}", log_id_bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>());
         
         // Store log_id -> Wrapped DEK in the HashMap
@@ -163,6 +163,24 @@ impl VeridionKeyStore {
         // Convert bytes to string
         String::from_utf8(plaintext)
             .map_err(|_| "Invalid UTF-8 in decrypted data".to_string())
+    }
+
+    /// Get wrapped DEK for a log entry (for database storage)
+    /// 
+    /// # Arguments
+    /// 
+    /// * `log_id` - The log ID
+    /// 
+    /// # Returns
+    /// 
+    /// * `Some(Vec<u8>)` with wrapped DEK if exists
+    /// * `None` if key was shredded or doesn't exist
+    pub fn get_wrapped_dek(&self, log_id: &str) -> Option<Vec<u8>> {
+        self.keys
+            .lock()
+            .expect("Failed to acquire lock")
+            .get(log_id)
+            .cloned()
     }
 
     /// Shred (delete) the key for a specific log entry
