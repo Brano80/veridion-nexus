@@ -20,6 +20,9 @@ import {
   X,
   ScrollText,
   Trash2,
+  Lock,
+  Ban,
+  Bot,
 } from "lucide-react";
 import { useState } from "react";
 import { useModules } from "../hooks/useModules";
@@ -30,6 +33,9 @@ const coreNavigation = [
   { name: "Runtime Logs", href: "/runtime-logs", icon: ScrollText, module: null },
   { name: "Human Oversight", href: "/human-oversight", icon: Eye, module: "module_human_oversight" },
   { name: "Data Shredding", href: "/data-subjects", icon: Trash2, module: "module_data_subject_rights" },
+  { name: "Processing Restrictions", href: "/processing-restrictions", icon: Lock, module: "module_data_subject_rights" },
+  { name: "Processing Objections", href: "/processing-objections", icon: Ban, module: "module_data_subject_rights" },
+  { name: "Automated Decisions", href: "/automated-decisions", icon: Bot, module: "module_data_subject_rights" },
   { name: "Audit & Reports", href: "/audit-reports", icon: FileText, module: null },
   { name: "Settings", href: "/settings", icon: Settings, module: null },
 ];

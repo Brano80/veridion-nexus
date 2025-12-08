@@ -4,21 +4,34 @@ import DashboardLayout from "../components/DashboardLayout";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Trash2, Search, AlertTriangle, CheckCircle } from "lucide-react";
 import { useState } from "react";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchLogs() {
-  const res = await fetch(`${API_BASE}/logs?limit=100`);
-  return res.json();
+  const res = await fetch(`${API_BASE}/logs?limit=100`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch logs: ${res.status}`);
+  }
+  const data = await res.json();
+  return data;
 }
 
 async function shredData(sealId: string) {
   const res = await fetch(`${API_BASE}/shred_data`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ seal_id: sealId }),
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
     throw new Error("Failed to shred data");
   }
   return res.json();
@@ -47,7 +60,7 @@ export default function DataShreddingPage() {
     },
   });
 
-  const logs = logsData?.logs || [];
+  const logs = logsData?.data || [];
   const filteredLogs = logs.filter((log: any) => {
     if (!searchTerm) return true;
     const term = searchTerm.toLowerCase();

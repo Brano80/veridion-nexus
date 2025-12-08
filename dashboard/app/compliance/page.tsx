@@ -5,20 +5,37 @@ import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Trash2, Download, Search, Filter } from "lucide-react";
 import { useState } from "react";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchComplianceRecords() {
-  const res = await fetch(`${API_BASE}/logs`);
-  return res.json();
+  const res = await fetch(`${API_BASE}/logs`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch logs: ${res.status}`);
+  }
+  const data = await res.json();
+  // API vracia { data: [...], pagination: {...} }
+  return data.data || [];
 }
 
 async function shredData(sealId: string) {
   const res = await fetch(`${API_BASE}/shred_data`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ seal_id: sealId }),
   });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to shred data: ${res.status}`);
+  }
   return res.json();
 }
 

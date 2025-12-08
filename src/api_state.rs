@@ -2,6 +2,7 @@ use crate::core::crypto_shredder::VeridionKeyStore;
 use crate::core::privacy_bridge::SignicatClient;
 use crate::database::Database;
 use crate::deployment::DeploymentConfig;
+use crate::integration::notifications::NotificationService;
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -19,6 +20,8 @@ pub struct AppState {
     /// Deployment configuration
     #[allow(dead_code)]
     pub deployment: DeploymentConfig,
+    /// Notification service for GDPR Article 33 and EU AI Act Article 13
+    pub notification_service: Arc<NotificationService>,
 }
 
 impl AppState {
@@ -33,6 +36,7 @@ impl AppState {
             db: db.clone(),
             db_pool,
             deployment: DeploymentConfig::default(),
+            notification_service: Arc::new(NotificationService::new()),
         })
     }
 

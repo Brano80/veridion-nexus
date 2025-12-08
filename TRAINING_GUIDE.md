@@ -1,7 +1,8 @@
 # Veridion Nexus - Complete Training Program
 ## Master the Platform for Customer Presentations
 
-**Version 1.0 | January 2025**
+**Version 1.1 | January 2025**  
+**Updated:** Complete GDPR & EU AI Act Compliance Features
 
 ---
 
@@ -116,16 +117,29 @@ By the end of this module, you will:
 
 **Can be enabled/disabled** via Module Configuration API:
 
-- Data Subject Rights (GDPR Articles 15-22)
-- Human Oversight (EU AI Act Article 14)
-- Risk Assessment (EU AI Act Article 9)
-- Breach Management (GDPR Articles 33-34)
-- Consent Management (GDPR Articles 6-7)
-- DPIA Tracking (GDPR Article 35)
-- Retention Policies (GDPR Article 5(1)(e))
-- Post-Market Monitoring (EU AI Act Article 72)
-- Green AI Telemetry (EU AI Act Article 40)
-- AI-BOM (CycloneDX Standard)
+- **Data Subject Rights** (GDPR Articles 15-22, 18, 19, 21, 22, 30)
+  - Complete implementation: Access, Export, Rectification, Erasure
+  - Processing Restrictions (Article 18)
+  - Processing Objections (Article 21)
+  - Automated Decision Review (Article 22)
+  - Processing Records Export (Article 30)
+- **Human Oversight** (EU AI Act Article 14)
+- **Risk Assessment** (EU AI Act Article 9)
+  - Enhanced context-aware assessment with ML-based scoring
+- **Breach Management** (GDPR Articles 33-34)
+  - Automated notifications with 72-hour compliance
+- **Consent Management** (GDPR Articles 6-7)
+- **DPIA Tracking** (GDPR Article 35)
+- **Retention Policies** (GDPR Article 5(1)(e))
+- **Post-Market Monitoring** (EU AI Act Article 72)
+- **Green AI Telemetry** (EU AI Act Article 40)
+- **AI-BOM** (CycloneDX Standard)
+- **Conformity Assessment** (EU AI Act Article 8)
+- **Data Governance** (EU AI Act Article 11)
+  - Quality metrics, bias detection, lineage tracking
+- **Notification Service** (GDPR Article 33, EU AI Act Article 13)
+  - SMTP email, Twilio SMS, in-app notifications
+  - Multi-language support, user preferences
 
 ### Layer 3: Integration Layer (Always Available)
 

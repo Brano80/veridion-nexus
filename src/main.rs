@@ -34,6 +34,16 @@ use routes::*;
         routes::data_subject_access,
         routes::data_subject_export,
         routes::data_subject_rectify,
+        routes::request_processing_restriction,
+        routes::lift_processing_restriction,
+        routes::get_processing_restrictions,
+        routes::request_processing_objection,
+        routes::withdraw_processing_objection,
+        routes::reject_processing_objection,
+        routes::get_processing_objections,
+        routes::request_human_review,
+        routes::appeal_automated_decision,
+        routes::get_automated_decisions,
         routes::require_human_oversight,
         routes::approve_action,
         routes::reject_action,
@@ -83,6 +93,20 @@ use routes::*;
         compliance_models::DataSubjectAccessResponse,
         compliance_models::DataSubjectRecord,
         compliance_models::DataSubjectRectificationRequest,
+        compliance_models::ProcessingRestrictionRequest,
+        compliance_models::ProcessingRestrictionResponse,
+        compliance_models::LiftRestrictionRequest,
+        compliance_models::RestrictionsResponse,
+        compliance_models::ProcessingObjectionRequest,
+        compliance_models::ProcessingObjectionResponse,
+        compliance_models::WithdrawObjectionRequest,
+        compliance_models::RejectObjectionRequest,
+        compliance_models::ObjectionsResponse,
+        compliance_models::AutomatedDecisionResponse,
+        compliance_models::RequestReviewRequest,
+        compliance_models::RequestReviewResponse,
+        compliance_models::AppealDecisionRequest,
+        compliance_models::AutomatedDecisionsResponse,
         compliance_models::DataBreachReport,
         compliance_models::DataBreachResponse,
         compliance_models::ConsentRequest,
@@ -208,6 +232,8 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .wrap(SecurityHeaders)
             .wrap(rate_limiter.clone())
+            // Response compression (Priority 3: Performance Optimization)
+            .wrap(Compress::default())
             // Enable request logging
             .wrap(middleware::Logger::default())
             .route("/health", web::get().to(health))
@@ -227,6 +253,19 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/data_subject/{user_id}/access").route(web::get().to(data_subject_access)))
                     .service(web::resource("/data_subject/{user_id}/export").route(web::get().to(data_subject_export)))
                     .service(web::resource("/data_subject/{user_id}/rectify").route(web::put().to(data_subject_rectify)))
+                    // GDPR Article 18: Processing Restrictions
+                    .service(web::resource("/data_subject/{user_id}/restrict").route(web::post().to(request_processing_restriction)))
+                    .service(web::resource("/data_subject/{user_id}/lift_restriction").route(web::post().to(lift_processing_restriction)))
+                    .service(web::resource("/data_subject/{user_id}/restrictions").route(web::get().to(get_processing_restrictions)))
+                    // GDPR Article 21: Processing Objections
+                    .service(web::resource("/data_subject/{user_id}/object").route(web::post().to(request_processing_objection)))
+                    .service(web::resource("/data_subject/{user_id}/withdraw_objection").route(web::post().to(withdraw_processing_objection)))
+                    .service(web::resource("/data_subject/{user_id}/reject_objection").route(web::post().to(reject_processing_objection)))
+                    .service(web::resource("/data_subject/{user_id}/objections").route(web::get().to(get_processing_objections)))
+                    // GDPR Article 22: Automated Decision-Making
+                    .service(web::resource("/data_subject/{user_id}/request_review").route(web::post().to(request_human_review)))
+                    .service(web::resource("/data_subject/{user_id}/appeal_decision").route(web::post().to(appeal_automated_decision)))
+                    .service(web::resource("/data_subject/{user_id}/automated_decisions").route(web::get().to(get_automated_decisions)))
                     // Priority 1: Human Oversight
                     .service(web::resource("/action/{seal_id}/require_approval").route(web::post().to(require_human_oversight)))
                     .service(web::resource("/action/{seal_id}/approve").route(web::post().to(approve_action)))
@@ -270,6 +309,18 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/modules").route(web::get().to(routes::modules::list_modules)))
                     .service(web::resource("/modules/{name}/enable").route(web::post().to(routes::modules::enable_module)))
                     .service(web::resource("/modules/{name}/disable").route(web::post().to(routes::modules::disable_module)))
+                    // Priority 2: User Notification Preferences (EU AI Act Article 13)
+                    .service(web::resource("/user/{user_id}/notification_preferences").route(web::post().to(routes::set_notification_preferences)).route(web::get().to(routes::get_notification_preferences)))
+                    .service(web::resource("/user/{user_id}/notifications").route(web::get().to(routes::get_user_notifications)))
+                    // Priority 3: GDPR Article 30 - Records of Processing Activities
+                    .service(web::resource("/processing_records").route(web::get().to(routes::get_processing_records)))
+                    // Priority 3: EU AI Act Article 8 - Conformity Assessment
+                    .service(web::resource("/conformity_assessments").route(web::post().to(routes::create_conformity_assessment)).route(web::get().to(routes::get_conformity_assessments)))
+                    // Priority 3: EU AI Act Article 11 - Data Governance Extension
+                    .service(web::resource("/data_quality/metrics").route(web::post().to(routes::record_data_quality_metric)))
+                    .service(web::resource("/data_quality/bias").route(web::post().to(routes::record_data_bias)))
+                    .service(web::resource("/data_quality/lineage").route(web::post().to(routes::record_data_lineage)))
+                    .service(web::resource("/data_quality/report/{seal_id}").route(web::get().to(routes::get_data_quality_report)))
                     .service(web::resource("/modules/{name}/status").route(web::get().to(routes::modules::get_module_status)))
             )
             .service(

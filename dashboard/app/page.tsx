@@ -10,16 +10,24 @@ import {
   Clock,
   TrendingUp,
 } from "lucide-react";
+import { getAuthHeaders } from "./utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchStats() {
-  const [logs, risks, breaches, monitoring] = await Promise.all([
-    fetch(`${API_BASE}/logs`).then((r) => r.json()),
-    fetch(`${API_BASE}/risks`).then((r) => r.json()),
-    fetch(`${API_BASE}/breaches`).then((r) => r.json()),
-    fetch(`${API_BASE}/monitoring/events`).then((r) => r.json()),
+  const headers = getAuthHeaders();
+  
+  const [logsRes, risksRes, breachesRes, monitoring] = await Promise.all([
+    fetch(`${API_BASE}/logs`, { headers }).then((r) => r.json()),
+    fetch(`${API_BASE}/risks`, { headers }).then((r) => r.json()).catch(() => ({ data: [] })),
+    fetch(`${API_BASE}/breaches`, { headers }).then((r) => r.json()).catch(() => ({ data: [] })),
+    fetch(`${API_BASE}/monitoring/events`, { headers }).then((r) => r.json()).catch(() => ({ events: [] })),
   ]);
+
+  // API vracia { data: [...], pagination: {...} }
+  const logs = logsRes.data || [];
+  const risks = risksRes.data || risksRes || [];
+  const breaches = breachesRes.data || breachesRes || [];
 
   const highRisks = risks.filter((r: any) => r.risk_level === "HIGH").length;
   const openBreaches = breaches.filter((b: any) => b.status === "REPORTED").length;
@@ -119,40 +127,48 @@ export default function Home() {
         {/* Recent Activity */}
         <div className="bg-slate-900 border border-slate-800 rounded-lg p-6">
           <h2 className="text-xl font-bold text-white mb-4">Recent Activity</h2>
-          <div className="space-y-3">
-            {stats?.recentActivity?.map((log: any, i: number) => (
-              <div
-                key={i}
-                className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg border border-slate-700"
-              >
-                <div className="flex items-center gap-3">
-                  <CheckCircle
-                    size={16}
-                    className={
-                      log.status.includes("BLOCKED")
-                        ? "text-red-400"
-                        : "text-emerald-400"
-                    }
-                  />
-                  <div>
-                    <div className="text-sm font-medium text-white">
-                      {log.action_summary}
-                    </div>
-                    <div className="text-xs text-slate-500">{log.timestamp}</div>
-                  </div>
-                </div>
-                <span
-                  className={`px-2 py-1 rounded text-xs font-medium ${
-                    log.status.includes("BLOCKED")
-                      ? "bg-red-900/30 text-red-400"
-                      : "bg-emerald-900/30 text-emerald-400"
-                  }`}
+          {stats?.recentActivity && stats.recentActivity.length > 0 ? (
+            <div className="space-y-3">
+              {stats.recentActivity.map((log: any, i: number) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg border border-slate-700"
                 >
-                  {log.status}
-                </span>
-              </div>
-            ))}
-          </div>
+                  <div className="flex items-center gap-3">
+                    <CheckCircle
+                      size={16}
+                      className={
+                        log.status?.includes("BLOCKED")
+                          ? "text-red-400"
+                          : "text-emerald-400"
+                      }
+                    />
+                    <div>
+                      <div className="text-sm font-medium text-white">
+                        {log.action_summary || log.agent_id || "Unknown action"}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {log.timestamp || log.created_at || "No timestamp"}
+                      </div>
+                    </div>
+                  </div>
+                  <span
+                    className={`px-2 py-1 rounded text-xs font-medium ${
+                      log.status?.includes("BLOCKED")
+                        ? "bg-red-900/30 text-red-400"
+                        : "bg-emerald-900/30 text-emerald-400"
+                    }`}
+                  >
+                    {log.status || "UNKNOWN"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-slate-400 text-center py-8">
+              No recent activity
+            </div>
+          )}
         </div>
       </div>
     </DashboardLayout>

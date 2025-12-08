@@ -1,6 +1,7 @@
 import requests
 import time
 import random
+import os
 
 # Skúsime stiahnuť cenu BTC z verejného API
 def get_btc_price():
@@ -10,7 +11,33 @@ def get_btc_price():
     except:
         return random.randint(94000, 96000) # Fallback ak nejde net
 
-API_URL = "http://localhost:8080/log_action"
+# Opravený API URL
+API_URL = "http://localhost:8080/api/v1/log_action"
+
+# JWT Token - môžete ho nastaviť ako environment variable alebo získate priamo
+# Získajte token cez: POST http://localhost:8080/api/v1/auth/login
+# Príklad: $env:VERIDION_JWT_TOKEN = "your-token-here" (PowerShell)
+# Alebo: export VERIDION_JWT_TOKEN="your-token-here" (Bash)
+JWT_TOKEN = os.getenv("VERIDION_JWT_TOKEN")
+
+# Ak token nie je nastavený, pokúsi sa automaticky prihlásiť
+if not JWT_TOKEN:
+    try:
+        print("🔐 Žiadny JWT token - pokúšam sa automaticky prihlásiť...")
+        login_response = requests.post(
+            "http://localhost:8080/api/v1/auth/login",
+            json={"username": "testuser", "password": "test123"},
+            timeout=5
+        )
+        if login_response.status_code == 200:
+            JWT_TOKEN = login_response.json()["token"]
+            print(f"✅ Úspešne prihlásený! Token: {JWT_TOKEN[:50]}...")
+        else:
+            print(f"❌ Chyba prihlásenia: {login_response.status_code}")
+            print("💡 Nastavte VERIDION_JWT_TOKEN environment variable alebo upravte credentials v skripte")
+    except Exception as e:
+        print(f"❌ Chyba pri získavaní tokenu: {e}")
+        print("💡 Nastavte VERIDION_JWT_TOKEN environment variable")
 
 ACTIONS = [
     ("Credit Check - Client EU", "EU"),
@@ -38,22 +65,48 @@ def run_trader():
             payload = f"Executed {action_name} - Safe EU operation"
             print(f"🤖 Action: {action}")
 
-        # 2. Odoslanie do Veridion Nexus
+        # 2. Odoslanie do Veridion Nexus s autentifikáciou
+        if not JWT_TOKEN:
+            print("   ❌ Chýba JWT token - preskakujem...")
+            time.sleep(3)
+            continue
+            
         try:
             res = requests.post(API_URL, json={
                 "agent_id": "python uipath_agent.py",
                 "action": action,
                 "payload": payload,
                 "target_region": target_region
-            })
+            }, headers={
+                "Authorization": f"Bearer {JWT_TOKEN}",
+                "Content-Type": "application/json"
+            }, timeout=10)
             
             if res.status_code == 200:
-                print("   ✅ VERIDION: COMPLIANT (Sealed)")
+                response_data = res.json()
+                print(f"   ✅ VERIDION: COMPLIANT (Sealed) - Seal ID: {response_data.get('seal_id', 'N/A')[:30]}...")
             elif res.status_code == 403:
-                print("   🛑 VERIDION: BLOCKED (Sovereign Lock Active!)")
+                try:
+                    response_data = res.json()
+                    print(f"   🛑 VERIDION: BLOCKED ({response_data.get('status', 'SOVEREIGNTY')})")
+                except:
+                    print("   🛑 VERIDION: BLOCKED (Sovereign Lock Active!)")
+            elif res.status_code == 401:
+                print("   ❌ VERIDION: UNAUTHORIZED - Token vypršal alebo je neplatný!")
+                print("   💡 Získajte nový token: POST http://localhost:8080/api/v1/auth/login")
+            else:
+                print(f"   ⚠️  VERIDION: Neočakávaný status {res.status_code}")
+                try:
+                    print(f"   Response: {res.text[:100]}")
+                except:
+                    pass
             
+        except requests.exceptions.Timeout:
+            print("   ⏱️  Timeout - API neodpovedá")
+        except requests.exceptions.ConnectionError:
+            print("   🔌 Connection Error - Skontrolujte, či API beží na http://localhost:8080")
         except Exception as e:
-            print("   ❌ Network Error")
+            print(f"   ❌ Network Error: {e}")
 
         time.sleep(3)
 

@@ -34,6 +34,25 @@ pub struct ComplianceRecord {
     /// User ID for data subject rights (GDPR)
     #[schema(example = "user-123")]
     pub user_id: Option<String>,
+    // Extended Annex IV fields
+    /// AI system lifecycle stage (DEVELOPMENT, TRAINING, DEPLOYMENT, MONITORING, DECOMMISSIONING)
+    #[schema(example = "DEPLOYMENT")]
+    pub lifecycle_stage: Option<String>,
+    /// Training data sources and characteristics
+    #[schema(example = r#"["Public datasets", "Internal data"]"#)]
+    pub training_data_sources: Option<Vec<String>>,
+    /// Performance metrics and evaluation methods
+    #[schema(example = r#"{"accuracy": 0.95, "precision": 0.92}"#)]
+    pub performance_metrics: Option<serde_json::Value>,
+    /// Post-market monitoring results
+    #[schema(example = "No incidents detected")]
+    pub post_market_monitoring: Option<String>,
+    /// Human oversight procedures applied
+    #[schema(example = "Automated review with human escalation")]
+    pub human_oversight_procedures: Option<String>,
+    /// Risk management measures implemented
+    #[schema(example = r#"["Encryption", "Access controls", "Audit logging"]"#)]
+    pub risk_management_measures: Option<Vec<String>>,
 }
 
 /// Generate an Annex IV compliance report PDF
@@ -96,6 +115,115 @@ pub fn generate_report(records: &Vec<ComplianceRecord>, output_path: &str) -> Re
 
     doc.save(&mut BufWriter::new(File::create(output_path).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Export Annex IV report to JSON format
+pub fn export_to_json(records: &Vec<ComplianceRecord>, output_path: &str) -> Result<(), String> {
+    let json_content = serde_json::to_string_pretty(records)
+        .map_err(|e| format!("Failed to serialize to JSON: {}", e))?;
+    
+    std::fs::write(output_path, json_content)
+        .map_err(|e| format!("Failed to write JSON file: {}", e))?;
+    
+    Ok(())
+}
+
+/// Export Annex IV report to XML format
+pub fn export_to_xml(records: &Vec<ComplianceRecord>, output_path: &str) -> Result<(), String> {
+    let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<annex_iv_report xmlns="https://veridion.nexus/annex-iv">
+  <generated_at>"#);
+    
+    xml.push_str(&chrono::Utc::now().to_rfc3339());
+    xml.push_str(r#"</generated_at>
+  <records>
+"#);
+    
+    for record in records {
+        xml.push_str("    <record>\n");
+        xml.push_str(&format!("      <timestamp>{}</timestamp>\n", escape_xml(&record.timestamp)));
+        xml.push_str(&format!("      <action_summary>{}</action_summary>\n", escape_xml(&record.action_summary)));
+        xml.push_str(&format!("      <seal_id>{}</seal_id>\n", escape_xml(&record.seal_id)));
+        xml.push_str(&format!("      <status>{}</status>\n", escape_xml(&record.status)));
+        
+        if let Some(ref risk_level) = record.risk_level {
+            xml.push_str(&format!("      <risk_level>{}</risk_level>\n", escape_xml(risk_level)));
+        }
+        
+        if let Some(ref lifecycle_stage) = record.lifecycle_stage {
+            xml.push_str(&format!("      <lifecycle_stage>{}</lifecycle_stage>\n", escape_xml(lifecycle_stage)));
+        }
+        
+        if let Some(ref training_data) = record.training_data_sources {
+            xml.push_str("      <training_data_sources>\n");
+            for source in training_data {
+                xml.push_str(&format!("        <source>{}</source>\n", escape_xml(source)));
+            }
+            xml.push_str("      </training_data_sources>\n");
+        }
+        
+        if let Some(ref measures) = record.risk_management_measures {
+            xml.push_str("      <risk_management_measures>\n");
+            for measure in measures {
+                xml.push_str(&format!("        <measure>{}</measure>\n", escape_xml(measure)));
+            }
+            xml.push_str("      </risk_management_measures>\n");
+        }
+        
+        xml.push_str("    </record>\n");
+    }
+    
+    xml.push_str("  </records>\n");
+    xml.push_str("</annex_iv_report>\n");
+    
+    std::fs::write(output_path, xml)
+        .map_err(|e| format!("Failed to write XML file: {}", e))?;
+    
+    Ok(())
+}
+
+/// Escape XML special characters
+fn escape_xml(s: &str) -> String {
+    s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
+}
+
+/// Export format enumeration
+#[derive(Debug, Clone, Copy)]
+pub enum ExportFormat {
+    Pdf,
+    Json,
+    Xml,
+}
+
+impl ExportFormat {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "pdf" => Some(ExportFormat::Pdf),
+            "json" => Some(ExportFormat::Json),
+            "xml" => Some(ExportFormat::Xml),
+            _ => None,
+        }
+    }
+    
+    pub fn content_type(&self) -> &'static str {
+        match self {
+            ExportFormat::Pdf => "application/pdf",
+            ExportFormat::Json => "application/json",
+            ExportFormat::Xml => "application/xml",
+        }
+    }
+    
+    pub fn file_extension(&self) -> &'static str {
+        match self {
+            ExportFormat::Pdf => "pdf",
+            ExportFormat::Json => "json",
+            ExportFormat::Xml => "xml",
+        }
+    }
 }
 
 #[cfg(test)]

@@ -91,6 +91,250 @@ pub struct DataSubjectRectificationRequest {
     pub corrected_data: String,
 }
 
+// ========== GDPR Article 18: Right to Restriction of Processing ==========
+
+/// Processing Restriction Request (GDPR Article 18)
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ProcessingRestrictionRequest {
+    /// User ID requesting restriction
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Type of restriction: FULL, PARTIAL, SPECIFIC_ACTION
+    #[schema(example = "PARTIAL")]
+    pub restriction_type: String,
+    /// Specific actions to restrict (for PARTIAL or SPECIFIC_ACTION type)
+    #[schema(example = r#"["credit_scoring", "automated_decision"]"#)]
+    pub restricted_actions: Option<Vec<String>>,
+    /// Reason for restriction (optional)
+    #[schema(example = "Disputing accuracy of data")]
+    pub reason: Option<String>,
+    /// Optional expiration date
+    #[schema(example = "2025-12-31 23:59:59")]
+    pub expires_at: Option<String>,
+}
+
+/// Processing Restriction Response
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ProcessingRestrictionResponse {
+    /// Restriction ID for tracking
+    #[schema(example = "RESTRICT-2024-01-15-ABC123")]
+    pub restriction_id: String,
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Restriction type
+    #[schema(example = "PARTIAL")]
+    pub restriction_type: String,
+    /// Status: ACTIVE, LIFTED, EXPIRED
+    #[schema(example = "ACTIVE")]
+    pub status: String,
+    /// When restriction was requested
+    #[schema(example = "2024-01-15 14:30:00")]
+    pub requested_at: String,
+    /// When restriction expires (if applicable)
+    #[schema(example = "2025-12-31 23:59:59")]
+    pub expires_at: Option<String>,
+}
+
+/// Lift Restriction Request
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct LiftRestrictionRequest {
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Reason for lifting restriction (optional)
+    #[schema(example = "Data accuracy confirmed")]
+    pub reason: Option<String>,
+    /// Lifted by (user ID or system identifier)
+    #[schema(example = "admin-001")]
+    pub lifted_by: Option<String>,
+}
+
+/// Get Restrictions Response
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct RestrictionsResponse {
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// List of all restrictions (active and historical)
+    pub restrictions: Vec<ProcessingRestrictionResponse>,
+}
+
+// ========== GDPR Article 21: Right to Object ==========
+
+/// Processing Objection Request (GDPR Article 21)
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ProcessingObjectionRequest {
+    /// User ID objecting to processing
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Type of objection: FULL, PARTIAL, SPECIFIC_ACTION, DIRECT_MARKETING, PROFILING
+    #[schema(example = "PARTIAL")]
+    pub objection_type: String,
+    /// Specific actions to object (for PARTIAL or SPECIFIC_ACTION type)
+    #[schema(example = r#"["credit_scoring", "automated_decision"]"#)]
+    pub objected_actions: Option<Vec<String>>,
+    /// Legal basis being objected to (e.g., "LEGITIMATE_INTERESTS", "PUBLIC_TASK")
+    #[schema(example = "LEGITIMATE_INTERESTS")]
+    pub legal_basis: Option<String>,
+    /// Reason for objection (optional)
+    #[schema(example = "User objects to processing based on legitimate interests")]
+    pub reason: Option<String>,
+}
+
+/// Processing Objection Response
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ProcessingObjectionResponse {
+    /// Objection ID for tracking
+    #[schema(example = "OBJECT-2024-01-15-ABC123")]
+    pub objection_id: String,
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Objection type
+    #[schema(example = "PARTIAL")]
+    pub objection_type: String,
+    /// Status: ACTIVE, WITHDRAWN, REJECTED, RESOLVED
+    #[schema(example = "ACTIVE")]
+    pub status: String,
+    /// When objection was requested
+    #[schema(example = "2024-01-15 14:30:00")]
+    pub requested_at: String,
+    /// Rejection reason (if rejected)
+    #[schema(example = "Processing necessary for legal obligations")]
+    pub rejection_reason: Option<String>,
+}
+
+/// Withdraw Objection Request
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct WithdrawObjectionRequest {
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Reason for withdrawing objection (optional)
+    #[schema(example = "User no longer objects to processing")]
+    pub reason: Option<String>,
+}
+
+/// Reject Objection Request (GDPR Article 21(1) - must provide reason)
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct RejectObjectionRequest {
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Reason for rejection (REQUIRED per GDPR Article 21(1))
+    #[schema(example = "Processing is necessary for the performance of a task carried out in the public interest")]
+    pub rejection_reason: String,
+    /// Rejected by (user ID or system identifier)
+    #[schema(example = "admin-001")]
+    pub rejected_by: Option<String>,
+}
+
+/// Get Objections Response
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ObjectionsResponse {
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// List of all objections (active and historical)
+    pub objections: Vec<ProcessingObjectionResponse>,
+}
+
+// ========== GDPR Article 22: Automated Decision-Making ==========
+
+/// Automated Decision Response
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct AutomatedDecisionResponse {
+    /// Decision ID for tracking
+    #[schema(example = "DECISION-2024-01-15-ABC123")]
+    pub decision_id: String,
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Seal ID of the compliance record
+    #[schema(example = "SEAL-2024-01-15-ABC123")]
+    pub seal_id: String,
+    /// Action type that triggered the decision
+    #[schema(example = "credit_scoring")]
+    pub action_type: String,
+    /// Decision outcome: APPROVED, REJECTED, PENDING, CONDITIONAL
+    #[schema(example = "REJECTED")]
+    pub decision_outcome: String,
+    /// Explanation of the decision
+    #[schema(example = "Credit score below threshold")]
+    pub decision_reasoning: Option<String>,
+    /// Legal effect of the decision
+    #[schema(example = "Loan application denied")]
+    pub legal_effect: Option<String>,
+    /// Whether decision significantly affects the individual
+    #[schema(example = true)]
+    pub significant_impact: bool,
+    /// Status: PENDING_REVIEW, UNDER_REVIEW, REVIEWED, APPEALED, OVERRIDDEN
+    #[schema(example = "PENDING_REVIEW")]
+    pub status: String,
+    /// When decision was made
+    #[schema(example = "2024-01-15 14:30:00")]
+    pub decision_timestamp: String,
+    /// Whether human review is required
+    #[schema(example = true)]
+    pub human_review_required: bool,
+}
+
+/// Request Human Review Request (GDPR Article 22)
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct RequestReviewRequest {
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Decision ID to review
+    #[schema(example = "DECISION-2024-01-15-ABC123")]
+    pub decision_id: Option<String>,
+    /// Seal ID to review (alternative to decision_id)
+    #[schema(example = "SEAL-2024-01-15-ABC123")]
+    pub seal_id: Option<String>,
+    /// Reason for requesting review (optional)
+    #[schema(example = "User disputes the automated decision")]
+    pub reason: Option<String>,
+}
+
+/// Request Review Response
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct RequestReviewResponse {
+    /// Decision ID
+    #[schema(example = "DECISION-2024-01-15-ABC123")]
+    pub decision_id: String,
+    /// Status after review request
+    #[schema(example = "UNDER_REVIEW")]
+    pub status: String,
+    /// Message
+    #[schema(example = "Review requested successfully")]
+    pub message: String,
+}
+
+/// Appeal Decision Request
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct AppealDecisionRequest {
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// Decision ID to appeal
+    #[schema(example = "DECISION-2024-01-15-ABC123")]
+    pub decision_id: String,
+    /// Reason for appeal (required)
+    #[schema(example = "I believe the decision was incorrect")]
+    pub appeal_reason: String,
+}
+
+/// Get Automated Decisions Response
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct AutomatedDecisionsResponse {
+    /// User ID
+    #[schema(example = "user-123")]
+    pub user_id: String,
+    /// List of all automated decisions
+    pub decisions: Vec<AutomatedDecisionResponse>,
+}
+
 /// Data Breach Report (GDPR Article 33-34)
 #[derive(Serialize, Deserialize, Clone, ToSchema)]
 pub struct DataBreachReport {

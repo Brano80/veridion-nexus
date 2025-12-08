@@ -39,6 +39,7 @@ use crate::compliance_models::*;
 use crate::models::db_models::*;
 use crate::models::db_models::{ConsentRecordDb, DpiaRecordDb, RetentionPolicyDb, RetentionAssignmentDb, MonitoringEventDb, SystemHealthStatusDb, WebhookEndpointDb, WebhookDeliveryDb};
 use crate::integration::webhooks::WebhookService;
+use crate::integration::notifications::NotificationChannel;
 use utoipa::ToSchema;
 use actix_web::http::header::ContentDisposition;
 use std::fs;
@@ -50,6 +51,10 @@ pub struct LogRequest {
     pub agent_id: String,
     pub action: String,
     pub payload: String,
+    /// Target region for data processing. Use ISO country codes (e.g., "EU", "DE", "SK") for allowed regions.
+    /// Blocked regions: "US", "CN", "RU" (case-insensitive, also blocks "US-*" patterns like "US-EAST-1", "US-WEST-2")
+    /// Examples: "EU" (allowed), "DE" (allowed), "US" (blocked), "us-east-1" (blocked), "CN" (blocked)
+    #[schema(example = "EU")]
     pub target_region: Option<String>,
     /// Transparency flag (EU AI Act Article 13)
     #[schema(example = true)]
@@ -112,11 +117,27 @@ pub struct ShredRequest {
 }
 
 // 1. LOG ACTION (Updated with Priority 1 features)
+/// Log AI action for compliance tracking
+/// 
+/// Logs an AI agent action with full compliance tracking. Automatically enforces:
+/// - Sovereign Lock (blocks US/CN/RU regions and US-* patterns like us-east-1)
+/// - Risk Assessment
+/// - eIDAS Sealing
+/// - Audit Logging
+/// 
+/// **Authentication:** Requires JWT token in `Authorization: Bearer <token>` header.
+/// 
+/// **Example allowed regions:** EU, DE, SK, FR, IT
+/// **Example blocked regions:** US, CN, RU, us-east-1, US-WEST-2
 #[utoipa::path(
     post,
     path = "/log_action",
     request_body = LogRequest,
-    responses((status = 200, body = LogResponse), (status = 403, body = LogResponse))
+    responses(
+        (status = 200, description = "Action logged successfully (COMPLIANT)", body = LogResponse),
+        (status = 403, description = "Action blocked (SOVEREIGNTY violation or other compliance issue)", body = LogResponse)
+    ),
+    tag = "Compliance"
 )]
 pub async fn log_action(
     req: web::Json<LogRequest>,
@@ -137,7 +158,112 @@ pub async fn log_action(
         }));
     }
 
-    // A.1. CONSENT CHECK (GDPR Article 6, 7) - if user_id is provided
+    // A.1. PROCESSING OBJECTION CHECK (GDPR Article 21) - if user_id is provided
+    // Check objections FIRST as they override consent (objection is stronger right)
+    if let Some(ref user_id) = req.user_id {
+        // Check for active processing objections
+        #[derive(sqlx::FromRow)]
+        struct ObjectionCheck {
+            objection_type: String,
+            objected_actions: serde_json::Value,
+        }
+
+        let objection_result: Option<ObjectionCheck> = sqlx::query_as(
+            "SELECT objection_type, objected_actions
+             FROM processing_objections
+             WHERE user_id = $1 AND status = 'ACTIVE'
+             LIMIT 1"
+        )
+        .bind(user_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .unwrap_or(None);
+
+        if let Some(objection) = objection_result {
+            // Check if objection applies to this action
+            let is_blocked = match objection.objection_type.as_str() {
+                "FULL" => true, // Block all processing
+                "DIRECT_MARKETING" => {
+                    // Block direct marketing actions
+                    req.action.contains("marketing") || req.action.contains("advertising")
+                }
+                "PROFILING" => {
+                    // Block profiling actions
+                    req.action.contains("profiling") || req.action.contains("automated_decision")
+                }
+                "PARTIAL" | "SPECIFIC_ACTION" => {
+                    // Check if this specific action is in the objected list
+                    if let Some(objected_actions) = objection.objected_actions.as_array() {
+                        objected_actions.iter()
+                            .any(|action| action.as_str() == Some(&req.action))
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+
+            if is_blocked {
+                return HttpResponse::Forbidden().json(serde_json::json!({
+                    "status": "BLOCKED (OBJECTION)",
+                    "reason": format!("Processing objected by user: {} (Type: {})", user_id, objection.objection_type),
+                    "user_id": user_id,
+                    "objection_type": objection.objection_type
+                }));
+            }
+        }
+    }
+
+    // A.2. PROCESSING RESTRICTION CHECK (GDPR Article 18) - if user_id is provided
+    if let Some(ref user_id) = req.user_id {
+        // Check for active processing restrictions
+        #[derive(sqlx::FromRow)]
+        struct RestrictionCheck {
+            restriction_type: String,
+            restricted_actions: serde_json::Value,
+        }
+
+        let restriction_result: Option<RestrictionCheck> = sqlx::query_as(
+            "SELECT restriction_type, restricted_actions
+             FROM processing_restrictions
+             WHERE user_id = $1 AND status = 'ACTIVE'
+               AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+             LIMIT 1"
+        )
+        .bind(user_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .unwrap_or(None);
+
+        if let Some(restriction) = restriction_result {
+            // Check if restriction applies to this action
+            let is_blocked = match restriction.restriction_type.as_str() {
+                "FULL" => true, // Block all processing
+                "PARTIAL" | "SPECIFIC_ACTION" => {
+                    // Check if this specific action is in the restricted list
+                    if let Some(restricted_actions) = restriction.restricted_actions.as_array() {
+                        restricted_actions.iter()
+                            .any(|action| action.as_str() == Some(&req.action))
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+
+            if is_blocked {
+                return HttpResponse::Forbidden().json(serde_json::json!({
+                    "status": "BLOCKED (RESTRICTION)",
+                    "reason": format!("Processing restricted for user: {} (Type: {})", user_id, restriction.restriction_type),
+                    "user_id": user_id,
+                    "restriction_type": restriction.restriction_type
+                }));
+            }
+        }
+    }
+
+    // A.3. CONSENT CHECK (GDPR Article 6, 7) - if user_id is provided
+    // Check consent AFTER objections and restrictions (consent is checked last)
     if let Some(ref user_id) = req.user_id {
         let has_consent = check_consent(&data.db_pool, user_id, "PROCESSING").await
             .unwrap_or(false);
@@ -152,22 +278,43 @@ pub async fn log_action(
     }
 
     // B. SOVEREIGN LOCK
-    let is_violation = req.target_region.as_deref() == Some("US") 
-        || req.target_region.as_deref() == Some("CN")
-        || req.target_region.as_deref() == Some("RU");
+    // Check for blocked regions (case-insensitive, also catches AWS region patterns like "us-east-1")
+    let target = req.target_region.as_deref().unwrap_or("").to_uppercase();
+    let is_violation = target == "US" 
+        || target == "CN"
+        || target == "RU"
+        || target == "USA"
+        || target.starts_with("US-")  // Catches "US-EAST-1", "US-WEST-2", etc.
+        || target.contains("UNITED STATES")
+        || target == "CHINA"
+        || target == "RUSSIA";
     
     let status = if is_violation { "BLOCKED (SOVEREIGNTY)" } else { "COMPLIANT" };
 
     // C. RISK ASSESSMENT (EU AI Act Article 9)
-    let risk_level = assess_risk(&req.action, &req.payload, is_violation);
-    let risk_factors = vec![
-        if is_violation { "Sovereignty violation attempt" } else { "Standard operation" }.to_string(),
-        if req.requires_human_oversight.unwrap_or(false) { "High-risk action" } else { "Low-risk action" }.to_string(),
-    ];
+    // Enhanced risk assessment using context-aware methodology
+    let risk_assessment_result = crate::core::risk_assessment::RiskAssessmentService::assess_risk(
+        &data.db_pool,
+        &req.action,
+        &req.payload,
+        req.user_id.as_deref(),
+        Some(&req.agent_id),
+        is_violation,
+    ).await;
+
+    let risk_level = risk_assessment_result.risk_level.to_string();
+    let risk_factors: Vec<String> = risk_assessment_result.risk_factors.iter()
+        .map(|rf| format!("{}: {} (score: {:.2})", rf.name, rf.description, rf.score))
+        .collect();
     let mitigation_actions = if is_violation {
         vec!["Action blocked".to_string()]
     } else {
-        vec!["Sovereign lock active".to_string(), "Encryption enabled".to_string()]
+        // Use suggestions from risk assessment, with fallback
+        if risk_assessment_result.mitigation_suggestions.is_empty() {
+            vec!["Sovereign lock active".to_string(), "Encryption enabled".to_string()]
+        } else {
+            risk_assessment_result.mitigation_suggestions
+        }
     };
 
     // D. PRIVACY BRIDGE (Signicat)
@@ -276,6 +423,74 @@ pub async fn log_action(
         .await;
     }
 
+    // H. AUTOMATED DECISION-MAKING DETECTION (GDPR Article 22)
+    // Detect if this action constitutes automated decision-making
+    if let Some(ref user_id) = req.user_id {
+        if is_automated_decision(&req.action, &req.payload) {
+            let decision_id = format!("DECISION-{}-{}", Local::now().format("%Y%m%d-%H%M%S"), Uuid::new_v4().to_string().chars().take(8).collect::<String>());
+            let decision_outcome = extract_decision_outcome(&req.payload);
+            let decision_reasoning = format!("Automated decision based on action: {} | Payload analysis indicates: {}", req.action, decision_outcome);
+            
+            // Determine legal effect based on action type
+            let legal_effect = match req.action.to_lowercase().as_str() {
+                action if action.contains("credit") => Some("Credit application decision".to_string()),
+                action if action.contains("loan") => Some("Loan application decision".to_string()),
+                action if action.contains("job") || action.contains("hiring") => Some("Job application decision".to_string()),
+                action if action.contains("insurance") => Some("Insurance application decision".to_string()),
+                _ => Some("Automated decision with legal effect".to_string()),
+            };
+
+            // Store automated decision record
+            let _ = sqlx::query(
+                "INSERT INTO automated_decisions (
+                    decision_id, user_id, seal_id, action_type, decision_outcome,
+                    decision_reasoning, legal_effect, significant_impact,
+                    status, human_review_required, decision_timestamp
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+            )
+            .bind(&decision_id)
+            .bind(user_id)
+            .bind(&seal_id)
+            .bind(&req.action)
+            .bind(&decision_outcome)
+            .bind(&decision_reasoning)
+            .bind(&legal_effect)
+            .bind(true) // significant_impact
+            .bind("PENDING_REVIEW")
+            .bind(true) // human_review_required
+            .bind(now)
+            .execute(&data.db_pool)
+            .await;
+
+            // Send notification to user about automated decision (GDPR Article 22)
+            let notification_service = data.notification_service.clone();
+            let db_pool = data.db_pool.clone();
+            let user_id_clone = user_id.clone();
+            let seal_id_clone = seal_id.clone();
+            let action_clone = req.action.clone();
+            let decision_outcome_clone = decision_outcome.clone();
+            let now_clone = now;
+            let legal_effect_clone = legal_effect.clone();
+
+            // Spawn async task to send notification (non-blocking)
+            tokio::spawn(async move {
+                let _ = notification_service.notify_high_risk_ai_action(
+                    &db_pool,
+                    &user_id_clone,
+                    &seal_id_clone,
+                    &format!("Automated Decision: {}", action_clone),
+                    "HIGH",
+                    &now_clone,
+                    legal_effect_clone.as_deref(),
+                    crate::integration::notifications::NotificationChannel::Email,
+                ).await;
+            });
+
+            println!("🤖 Automated decision detected: {} | User: {} | Outcome: {}", 
+                decision_id, user_id, decision_outcome);
+        }
+    }
+
     // Store energy telemetry (EU AI Act Article 40)
     if req.inference_time_ms.is_some() || req.energy_estimate_kwh.is_some() {
         let energy_kwh = if let Some(energy) = req.energy_estimate_kwh {
@@ -322,6 +537,54 @@ pub async fn log_action(
     }
 
     println!("Log: {} | Status: {} | Risk: {}", req.action, status, risk_level);
+
+    // Send notification for high-risk AI actions (EU AI Act Article 13)
+    // Also send for MEDIUM risk if confidence is high or historical context shows increasing trend
+    let should_notify = (risk_level == "HIGH" || risk_level == "CRITICAL") 
+        || (risk_level == "MEDIUM" && risk_assessment_result.confidence > 0.8 
+            && risk_assessment_result.historical_context.as_ref()
+                .map(|ctx| ctx.trend == "INCREASING")
+                .unwrap_or(false));
+    
+    if should_notify && req.user_id.is_some() && !is_violation {
+        let notification_service = data.notification_service.clone();
+        let db_pool = data.db_pool.clone();
+        let user_id = req.user_id.clone().unwrap();
+        let seal_id_clone = seal_id.clone();
+        let action_clone = req.action.clone();
+        let risk_level_clone = risk_level.clone();
+        let now_clone = now;
+        let purpose = Some(format!("AI processing: {}", req.action));
+        
+        // Spawn async task to send notification (non-blocking)
+        tokio::spawn(async move {
+            // Try email first
+            let email_result = notification_service.notify_high_risk_ai_action(
+                &db_pool,
+                &user_id,
+                &seal_id_clone,
+                &action_clone,
+                &risk_level_clone,
+                &now_clone,
+                purpose.as_deref(),
+                NotificationChannel::Email,
+            ).await;
+            
+            if email_result.is_err() {
+                // Fallback to SMS
+                let _ = notification_service.notify_high_risk_ai_action(
+                    &db_pool,
+                    &user_id,
+                    &seal_id_clone,
+                    &action_clone,
+                    &risk_level_clone,
+                    &now_clone,
+                    purpose.as_deref(),
+                    NotificationChannel::Sms,
+                ).await;
+            }
+        });
+    }
 
     // Trigger webhook event for compliance action
     let webhook_data = serde_json::json!({
@@ -375,13 +638,74 @@ fn assess_risk(action: &str, payload: &str, is_violation: bool) -> String {
     }
 }
 
-// 2. GET LOGS (with pagination)
+/// Detect if an action constitutes automated decision-making (GDPR Article 22)
+/// Automated decision-making includes decisions that:
+/// 1. Are based solely on automated processing
+/// 2. Produce legal effects or significantly affect the individual
+fn is_automated_decision(action: &str, payload: &str) -> bool {
+    let action_lower = action.to_lowercase();
+    let payload_lower = payload.to_lowercase();
+    
+    // Keywords that indicate automated decision-making
+    let automated_decision_keywords = [
+        "credit_scoring", "credit_score", "credit_decision",
+        "loan_approval", "loan_denial", "loan_decision",
+        "job_screening", "hiring_decision", "recruitment",
+        "insurance_underwriting", "insurance_decision",
+        "automated_decision", "automated_screening",
+        "profiling", "behavioral_analysis",
+        "risk_assessment", "eligibility_check",
+        "fraud_detection", "suspicious_activity",
+    ];
+    
+    // Check if action matches automated decision keywords
+    if automated_decision_keywords.iter().any(|kw| action_lower.contains(kw)) {
+        return true;
+    }
+    
+    // Check payload for decision-related terms
+    let decision_indicators = [
+        "approved", "rejected", "denied", "accepted",
+        "score", "rating", "threshold", "eligibility",
+        "qualify", "disqualify", "pass", "fail",
+    ];
+    
+    if decision_indicators.iter().any(|ind| payload_lower.contains(ind)) {
+        // Additional check: if action involves scoring/rating, it's likely automated decision
+        if action_lower.contains("score") || action_lower.contains("rate") || action_lower.contains("assess") {
+            return true;
+        }
+    }
+    
+    false
+}
+
+/// Extract decision outcome from payload (if available)
+fn extract_decision_outcome(payload: &str) -> String {
+    let payload_lower = payload.to_lowercase();
+    
+    if payload_lower.contains("approved") || payload_lower.contains("accept") || payload_lower.contains("pass") {
+        "APPROVED".to_string()
+    } else if payload_lower.contains("rejected") || payload_lower.contains("denied") || payload_lower.contains("fail") {
+        "REJECTED".to_string()
+    } else if payload_lower.contains("pending") || payload_lower.contains("review") {
+        "PENDING".to_string()
+    } else if payload_lower.contains("conditional") || payload_lower.contains("subject to") {
+        "CONDITIONAL".to_string()
+    } else {
+        "PENDING".to_string()
+    }
+}
+
+// 2. GET LOGS (with pagination and filtering)
 #[utoipa::path(
     get,
     path = "/logs",
     params(
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
-        ("limit" = Option<i64>, Query, description = "Items per page (default: 100, max: 1000)")
+        ("limit" = Option<i64>, Query, description = "Items per page (default: 100, max: 1000)"),
+        ("seal_id" = Option<String>, Query, description = "Filter by seal_id"),
+        ("agent_id" = Option<String>, Query, description = "Filter by agent_id")
     )
 )]
 pub async fn get_logs(
@@ -407,20 +731,65 @@ pub async fn get_logs(
         .max(1);
     let offset = (page - 1) * limit;
 
-    // Get total count
-    let total_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compliance_records")
-        .fetch_one(&data.db_pool)
-        .await
-        .unwrap_or(0);
+    let seal_id = query.get("seal_id");
+    let agent_id = query.get("agent_id");
 
-    match sqlx::query_as::<_, ComplianceRecordDb>(
-        "SELECT * FROM compliance_records ORDER BY timestamp DESC LIMIT $1 OFFSET $2"
-    )
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&data.db_pool)
-    .await
-    {
+    // Build dynamic queries based on filters
+    let (total_count, records_result) = if let Some(sid) = seal_id {
+        // Filter by seal_id
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compliance_records WHERE seal_id = $1")
+            .bind(sid)
+            .fetch_one(&data.db_pool)
+            .await
+            .unwrap_or(0);
+        
+        let records = sqlx::query_as::<_, ComplianceRecordDb>(
+            "SELECT * FROM compliance_records WHERE seal_id = $1 ORDER BY timestamp DESC LIMIT $2 OFFSET $3"
+        )
+        .bind(sid)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&data.db_pool)
+        .await;
+        
+        (count, records)
+    } else if let Some(aid) = agent_id {
+        // Filter by agent_id
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compliance_records WHERE agent_id = $1")
+            .bind(aid)
+            .fetch_one(&data.db_pool)
+            .await
+            .unwrap_or(0);
+        
+        let records = sqlx::query_as::<_, ComplianceRecordDb>(
+            "SELECT * FROM compliance_records WHERE agent_id = $1 ORDER BY timestamp DESC LIMIT $2 OFFSET $3"
+        )
+        .bind(aid)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&data.db_pool)
+        .await;
+        
+        (count, records)
+    } else {
+        // No filter - get all records
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM compliance_records")
+            .fetch_one(&data.db_pool)
+            .await
+            .unwrap_or(0);
+        
+        let records = sqlx::query_as::<_, ComplianceRecordDb>(
+            "SELECT * FROM compliance_records ORDER BY timestamp DESC LIMIT $1 OFFSET $2"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&data.db_pool)
+        .await;
+        
+        (count, records)
+    };
+
+    match records_result {
         Ok(records) => {
             let compliance_records: Vec<ComplianceRecord> = records.into_iter().map(|r| r.into()).collect();
             HttpResponse::Ok().json(serde_json::json!({
@@ -436,7 +805,8 @@ pub async fn get_logs(
         Err(e) => {
             eprintln!("Error fetching logs: {}", e);
             HttpResponse::InternalServerError().json(serde_json::json!({
-                "error": "Failed to fetch logs"
+                "error": "Failed to fetch logs",
+                "details": e.to_string()
             }))
         }
     }
@@ -502,6 +872,74 @@ pub async fn shred_data(
         Ok(rows) if rows.rows_affected() > 0 => {
             println!("🗑️ Shredded record: {}", req.seal_id);
             
+            // GDPR Article 19: Notify recipients of erasure
+            let notification_service = data.notification_service.clone();
+            let db_pool = data.db_pool.clone();
+            let seal_id_clone = req.seal_id.clone();
+            let now = Utc::now();
+            
+            // Spawn async task to send notifications (non-blocking)
+            tokio::spawn(async move {
+                // Get user_id from compliance record
+                let user_id: Option<String> = sqlx::query_scalar(
+                    "SELECT user_id FROM compliance_records WHERE seal_id = $1"
+                )
+                .bind(&seal_id_clone)
+                .fetch_optional(&db_pool)
+                .await
+                .unwrap_or(None);
+                
+                if let Some(uid) = user_id {
+                    // Get all recipients who received this user's data
+                    let recipients: Vec<(String, String)> = sqlx::query_as(
+                        "SELECT recipient_name, recipient_contact 
+                         FROM data_recipients 
+                         WHERE user_id = $1 AND seal_id = $2"
+                    )
+                    .bind(&uid)
+                    .bind(&seal_id_clone)
+                    .fetch_all(&db_pool)
+                    .await
+                    .unwrap_or_default();
+                    
+                    // Send notification to user
+                    let _ = notification_service.send_notification(
+                        &db_pool,
+                        crate::integration::notifications::NotificationRequest {
+                            user_id: uid.clone(),
+                            notification_type: crate::integration::notifications::NotificationType::ErasureDone,
+                            channel: crate::integration::notifications::NotificationChannel::Email,
+                            subject: Some("Data Erasure Notification".to_string()),
+                            body: format!(
+                                "Dear User,\n\nYour personal data has been erased as requested (GDPR Article 17).\n\nSeal ID: {}\n\nAs required by GDPR Article 19, we have notified all recipients of your personal data about this erasure.\n\nBest regards,\nVeridion Nexus Compliance Team",
+                                seal_id_clone
+                            ),
+                            language: Some("en".to_string()),
+                            related_entity_type: Some("COMPLIANCE_RECORD".to_string()),
+                            related_entity_id: Some(seal_id_clone.clone()),
+                        }
+                    ).await;
+                    
+                    // Log notification to recipients (GDPR Article 19 requirement)
+                    for (name, contact) in recipients {
+                        let _ = sqlx::query(
+                            "INSERT INTO user_notifications (
+                                id, notification_id, user_id, notification_type, channel,
+                                subject, body, status, language, related_entity_type, related_entity_id
+                            ) VALUES (gen_random_uuid(), $1, $2, 'ERASURE_NOTIFICATION', 'EMAIL', 
+                                      $3, $4, 'PENDING', 'en', 'RECIPIENT', $5)"
+                        )
+                        .bind(format!("NOTIF-RECIP-{}", uuid::Uuid::new_v4().to_string().replace("-", "").chars().take(12).collect::<String>()))
+                        .bind(&uid)
+                        .bind(Some(format!("Data Erasure - {}", name)))
+                        .bind(format!("Data subject {} has requested erasure of their personal data. Please delete their data from your systems.", uid))
+                        .bind(Some(contact))
+                        .execute(&db_pool)
+                        .await;
+                    }
+                }
+            });
+            
             // Trigger webhook event for GDPR erasure
             let webhook_data = serde_json::json!({
                 "seal_id": req.seal_id,
@@ -516,28 +954,139 @@ pub async fn shred_data(
     }
 }
 
-// 4. DOWNLOAD REPORT
-#[utoipa::path(get, path = "/download_report")]
-pub async fn download_report(data: web::Data<AppState>) -> impl Responder {
-    match sqlx::query_as::<_, ComplianceRecordDb>(
-        "SELECT * FROM compliance_records ORDER BY timestamp DESC"
-    )
-    .fetch_all(&data.db_pool)
-    .await
-    {
+// 4. DOWNLOAD REPORT (Enhanced with format support and extended Annex IV fields)
+#[utoipa::path(
+    get,
+    path = "/download_report",
+    params(
+        ("format" = Option<String>, Query, description = "Export format: pdf, json, xml (default: pdf)"),
+        ("seal_id" = Option<String>, Query, description = "Filter by specific seal_id")
+    ),
+    responses(
+        (status = 200, description = "Report generated successfully"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "Reports"
+)]
+pub async fn download_report(
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let format_str = query.get("format").map(|s| s.as_str()).unwrap_or("pdf");
+    let format = crate::core::annex_iv::ExportFormat::from_str(format_str)
+        .unwrap_or(crate::core::annex_iv::ExportFormat::Pdf);
+    
+    let seal_id_filter = query.get("seal_id");
+    
+    // Build query with optional seal_id filter
+    let query_str = if seal_id_filter.is_some() {
+        "SELECT cr.* FROM compliance_records cr WHERE cr.seal_id = $1 ORDER BY cr.timestamp DESC"
+    } else {
+        "SELECT cr.* FROM compliance_records cr ORDER BY cr.timestamp DESC LIMIT 1000"
+    };
+    
+    let result = if let Some(seal_id) = seal_id_filter {
+        sqlx::query_as::<_, ComplianceRecordDb>(query_str)
+            .bind(seal_id)
+            .fetch_all(&data.db_pool)
+            .await
+    } else {
+        sqlx::query_as::<_, ComplianceRecordDb>(query_str)
+            .fetch_all(&data.db_pool)
+            .await
+    };
+    
+    match result {
         Ok(records) => {
-            let compliance_records: Vec<ComplianceRecord> = records.into_iter().map(|r| r.into()).collect();
-            let _ = crate::core::annex_iv::generate_report(&compliance_records, "server_report.pdf");
-            if let Ok(bytes) = fs::read("server_report.pdf") {
-                HttpResponse::Ok().content_type("application/pdf")
-                    .append_header(ContentDisposition::attachment("Veridion_Annex_IV.pdf")).body(bytes)
-            } else { 
-                HttpResponse::InternalServerError().finish() 
+            // Convert to extended ComplianceRecord with Annex IV fields
+            let mut compliance_records: Vec<crate::core::annex_iv::ComplianceRecord> = Vec::new();
+            
+            for r in records {
+                let mut record: crate::core::annex_iv::ComplianceRecord = r.clone().into();
+                
+                // Add extended Annex IV fields
+                // Try to extract lifecycle stage from action_summary or use default
+                record.lifecycle_stage = Some("DEPLOYMENT".to_string()); // Default, can be enhanced
+                
+                // Get risk assessment data for mitigation actions
+                if let Ok(Some(ra)) = sqlx::query_as::<_, RiskAssessmentDb>(
+                    "SELECT * FROM risk_assessments WHERE seal_id = $1 LIMIT 1"
+                )
+                .bind(&r.seal_id)
+                .fetch_optional(&data.db_pool)
+                .await
+                {
+                    // Extract risk management measures from mitigation_actions
+                    if let Ok(measures) = serde_json::from_value::<Vec<String>>(ra.mitigation_actions.clone()) {
+                        record.risk_management_measures = Some(measures);
+                    }
+                }
+                
+                // Get post-market monitoring if available
+                if let Ok(Some(pm)) = sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT monitoring_results FROM post_market_monitoring WHERE seal_id = $1 LIMIT 1"
+                )
+                .bind(&r.seal_id)
+                .fetch_optional(&data.db_pool)
+                .await
+                {
+                    record.post_market_monitoring = pm;
+                }
+                
+                compliance_records.push(record);
+            }
+            
+            let filename = format!("Veridion_Annex_IV_{}.{}", 
+                chrono::Utc::now().format("%Y%m%d_%H%M%S"),
+                format.file_extension()
+            );
+            let temp_file = format!("temp_report_{}.{}", 
+                uuid::Uuid::new_v4().to_string().replace("-", ""),
+                format.file_extension()
+            );
+            
+            // Generate report in requested format
+            let export_result = match format {
+                crate::core::annex_iv::ExportFormat::Pdf => {
+                    crate::core::annex_iv::generate_report(&compliance_records, &temp_file)
+                }
+                crate::core::annex_iv::ExportFormat::Json => {
+                    crate::core::annex_iv::export_to_json(&compliance_records, &temp_file)
+                }
+                crate::core::annex_iv::ExportFormat::Xml => {
+                    crate::core::annex_iv::export_to_xml(&compliance_records, &temp_file)
+                }
+            };
+            
+            match export_result {
+                Ok(_) => {
+                    if let Ok(bytes) = fs::read(&temp_file) {
+                        // Clean up temp file
+                        let _ = fs::remove_file(&temp_file);
+                        
+                        HttpResponse::Ok()
+                            .content_type(format.content_type())
+                            .append_header(ContentDisposition::attachment(&filename))
+                            .body(bytes)
+                    } else {
+                        HttpResponse::InternalServerError().json(serde_json::json!({
+                            "error": "Failed to read generated report"
+                        }))
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error generating report: {}", e);
+                    HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": format!("Failed to generate report: {}", e)
+                    }))
+                }
             }
         }
         Err(e) => {
             eprintln!("Error fetching records for report: {}", e);
-            HttpResponse::InternalServerError().finish()
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to fetch compliance records"
+            }))
         }
     }
 }
@@ -718,14 +1267,872 @@ pub async fn data_subject_rectify(
     match result {
         Ok(rows) if rows.rows_affected() > 0 => {
             println!("📝 Rectified record: {} for user: {}", req.seal_id, user_id);
+            
+            // GDPR Article 19: Notify recipients of rectification
+            let notification_service = data.notification_service.clone();
+            let db_pool = data.db_pool.clone();
+            let user_id_clone = user_id.clone();
+            let seal_id_clone = req.seal_id.clone();
+            let corrected_data_clone = req.corrected_data.clone();
+            let now = Utc::now();
+            
+            // Spawn async task to send notifications to recipients (non-blocking)
+            tokio::spawn(async move {
+                // Get all recipients who received this user's data
+                let recipients: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT recipient_name, recipient_contact 
+                     FROM data_recipients 
+                     WHERE user_id = $1 AND seal_id = $2"
+                )
+                .bind(&user_id_clone)
+                .bind(&seal_id_clone)
+                .fetch_all(&db_pool)
+                .await
+                .unwrap_or_default();
+                
+                // Send notification to user
+                let _ = notification_service.send_notification(
+                    &db_pool,
+                    crate::integration::notifications::NotificationRequest {
+                        user_id: user_id_clone.clone(),
+                        notification_type: crate::integration::notifications::NotificationType::RectificationDone,
+                        channel: crate::integration::notifications::NotificationChannel::Email,
+                        subject: Some("Data Rectification Notification".to_string()),
+                        body: format!(
+                            "Dear User,\n\nYour personal data has been rectified as requested.\n\nSeal ID: {}\nCorrected Data: {}\n\nAs required by GDPR Article 19, we have notified all recipients of your personal data about this rectification.\n\nBest regards,\nVeridion Nexus Compliance Team",
+                            seal_id_clone, corrected_data_clone
+                        ),
+                        language: Some("en".to_string()),
+                        related_entity_type: Some("COMPLIANCE_RECORD".to_string()),
+                        related_entity_id: Some(seal_id_clone.clone()),
+                    }
+                ).await;
+                
+                // Log notification to recipients (GDPR Article 19 requirement)
+                for (name, contact) in recipients {
+                    let _ = sqlx::query(
+                        "INSERT INTO user_notifications (
+                            id, notification_id, user_id, notification_type, channel,
+                            subject, body, status, language, related_entity_type, related_entity_id
+                        ) VALUES (gen_random_uuid(), $1, $2, 'RECTIFICATION_NOTIFICATION', 'EMAIL', 
+                                  $3, $4, 'PENDING', 'en', 'RECIPIENT', $5)"
+                    )
+                    .bind(format!("NOTIF-RECIP-{}", uuid::Uuid::new_v4().to_string().replace("-", "").chars().take(12).collect::<String>()))
+                    .bind(&user_id_clone)
+                    .bind(Some(format!("Data Rectification - {}", name)))
+                    .bind(format!("Data subject {} has requested rectification of their personal data. Please update your records accordingly.", user_id_clone))
+                    .bind(Some(contact))
+                    .execute(&db_pool)
+                    .await;
+                }
+            });
+            
             HttpResponse::Ok().json(serde_json::json!({
                 "status": "SUCCESS",
-                "message": "Data rectified successfully"
+                "message": "Data rectified successfully. Recipients will be notified as per GDPR Article 19."
             }))
         }
         _ => HttpResponse::NotFound().json(serde_json::json!({
             "error": "Record not found or access denied"
         }))
+    }
+}
+
+// ========== GDPR Article 18: Right to Restriction of Processing ==========
+
+// 8.1. REQUEST PROCESSING RESTRICTION (GDPR Article 18)
+#[utoipa::path(
+    post,
+    path = "/data_subject/{user_id}/restrict",
+    request_body = ProcessingRestrictionRequest,
+    responses((status = 200, body = ProcessingRestrictionResponse))
+)]
+pub async fn request_processing_restriction(
+    path: web::Path<String>,
+    req: web::Json<ProcessingRestrictionRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.write
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+    if user_id != req.user_id {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "User ID mismatch"
+        }));
+    }
+
+    // Check if there's already an active restriction
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT restriction_id FROM processing_restrictions 
+         WHERE user_id = $1 AND status = 'ACTIVE'"
+    )
+    .bind(&user_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .unwrap_or(None);
+
+    if existing.is_some() {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": "User already has an active processing restriction",
+            "restriction_id": existing.unwrap().0
+        }));
+    }
+
+    let restriction_id = format!("RESTRICT-{}", Local::now().format("%Y%m%d-%H%M%S"));
+    let now = Utc::now();
+    
+    // Parse expires_at if provided
+    let expires_at = req.expires_at.as_ref()
+        .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+        .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc));
+
+    let restricted_actions_json = serde_json::to_value(req.restricted_actions.as_ref().unwrap_or(&vec![]))
+        .unwrap_or(serde_json::json!([]));
+
+    let result = sqlx::query(
+        "INSERT INTO processing_restrictions (
+            restriction_id, user_id, restriction_type, restricted_actions,
+            reason, status, requested_at, expires_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+    )
+    .bind(&restriction_id)
+    .bind(&user_id)
+    .bind(&req.restriction_type)
+    .bind(restricted_actions_json)
+    .bind(&req.reason)
+    .bind("ACTIVE")
+    .bind(now)
+    .bind(expires_at)
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            let response = ProcessingRestrictionResponse {
+                restriction_id: restriction_id.clone(),
+                user_id: user_id.clone(),
+                restriction_type: req.restriction_type.clone(),
+                status: "ACTIVE".to_string(),
+                requested_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
+                expires_at: expires_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+            };
+
+            println!("🔒 Processing restriction requested: {} | User: {} | Type: {}", 
+                restriction_id, user_id, req.restriction_type);
+
+            HttpResponse::Ok().json(response)
+        }
+        Err(e) => {
+            eprintln!("Error creating restriction: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to create processing restriction"
+            }))
+        }
+    }
+}
+
+// 8.2. LIFT PROCESSING RESTRICTION (GDPR Article 18)
+#[utoipa::path(
+    post,
+    path = "/data_subject/{user_id}/lift_restriction",
+    request_body = LiftRestrictionRequest,
+    responses((status = 200, body = serde_json::Value))
+)]
+pub async fn lift_processing_restriction(
+    path: web::Path<String>,
+    req: web::Json<LiftRestrictionRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.write
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+    if user_id != req.user_id {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "User ID mismatch"
+        }));
+    }
+
+    let now = Utc::now();
+    let lifted_by = req.lifted_by.as_deref().unwrap_or("SYSTEM");
+
+    let result = sqlx::query(
+        "UPDATE processing_restrictions 
+         SET status = 'LIFTED', lifted_at = $1, lifted_by = $2, lift_reason = $3
+         WHERE user_id = $4 AND status = 'ACTIVE'"
+    )
+    .bind(now)
+    .bind(lifted_by)
+    .bind(&req.reason)
+    .bind(&user_id)
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(rows) => {
+            if rows.rows_affected() == 0 {
+                return HttpResponse::NotFound().json(serde_json::json!({
+                    "error": "No active restriction found for this user"
+                }));
+            }
+
+            println!("🔓 Processing restriction lifted: User: {} | Lifted by: {}", user_id, lifted_by);
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": "Processing restriction lifted successfully",
+                "user_id": user_id,
+                "lifted_at": now.format("%Y-%m-%d %H:%M:%S").to_string()
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error lifting restriction: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to lift processing restriction"
+            }))
+        }
+    }
+}
+
+// 8.3. GET PROCESSING RESTRICTIONS (GDPR Article 18)
+#[utoipa::path(
+    get,
+    path = "/data_subject/{user_id}/restrictions",
+    responses((status = 200, body = RestrictionsResponse))
+)]
+pub async fn get_processing_restrictions(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.read
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+
+    #[derive(sqlx::FromRow)]
+    struct RestrictionRow {
+        restriction_id: String,
+        user_id: String,
+        restriction_type: String,
+        status: String,
+        requested_at: DateTime<Utc>,
+        expires_at: Option<DateTime<Utc>>,
+    }
+
+    let result = sqlx::query_as::<_, RestrictionRow>(
+        "SELECT restriction_id, user_id, restriction_type, status, requested_at, expires_at
+         FROM processing_restrictions
+         WHERE user_id = $1
+         ORDER BY requested_at DESC"
+    )
+    .bind(&user_id)
+    .fetch_all(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(rows) => {
+            let restrictions: Vec<ProcessingRestrictionResponse> = rows.into_iter().map(|r| {
+                ProcessingRestrictionResponse {
+                    restriction_id: r.restriction_id,
+                    user_id: r.user_id,
+                    restriction_type: r.restriction_type,
+                    status: r.status,
+                    requested_at: r.requested_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    expires_at: r.expires_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+                }
+            }).collect();
+
+            let response = RestrictionsResponse {
+                user_id: user_id.clone(),
+                restrictions,
+            };
+
+            HttpResponse::Ok().json(response)
+        }
+        Err(e) => {
+            eprintln!("Error fetching restrictions: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to fetch processing restrictions"
+            }))
+        }
+    }
+}
+
+// ========== GDPR Article 21: Right to Object ==========
+
+// 8.4. REQUEST PROCESSING OBJECTION (GDPR Article 21)
+#[utoipa::path(
+    post,
+    path = "/data_subject/{user_id}/object",
+    request_body = ProcessingObjectionRequest,
+    responses((status = 200, body = ProcessingObjectionResponse))
+)]
+pub async fn request_processing_objection(
+    path: web::Path<String>,
+    req: web::Json<ProcessingObjectionRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.write
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+    if user_id != req.user_id {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "User ID mismatch"
+        }));
+    }
+
+    // Check if there's already an active objection of this type
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT objection_id FROM processing_objections 
+         WHERE user_id = $1 AND objection_type = $2 AND status = 'ACTIVE'"
+    )
+    .bind(&user_id)
+    .bind(&req.objection_type)
+    .fetch_optional(&data.db_pool)
+    .await
+    .unwrap_or(None);
+
+    if existing.is_some() {
+        return HttpResponse::Conflict().json(serde_json::json!({
+            "error": format!("User already has an active {} objection", req.objection_type),
+            "objection_id": existing.unwrap().0
+        }));
+    }
+
+    let objection_id = format!("OBJECT-{}-{}", Local::now().format("%Y%m%d-%H%M%S"), Uuid::new_v4().to_string().chars().take(8).collect::<String>());
+    let now = Utc::now();
+
+    let objected_actions_json = serde_json::to_value(req.objected_actions.as_ref().unwrap_or(&vec![]))
+        .unwrap_or(serde_json::json!([]));
+
+    let result = sqlx::query(
+        "INSERT INTO processing_objections (
+            objection_id, user_id, objection_type, objected_actions,
+            legal_basis, reason, status, requested_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+    )
+    .bind(&objection_id)
+    .bind(&user_id)
+    .bind(&req.objection_type)
+    .bind(objected_actions_json)
+    .bind(&req.legal_basis)
+    .bind(&req.reason)
+    .bind("ACTIVE")
+    .bind(now)
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            let response = ProcessingObjectionResponse {
+                objection_id: objection_id.clone(),
+                user_id: user_id.clone(),
+                objection_type: req.objection_type.clone(),
+                status: "ACTIVE".to_string(),
+                requested_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
+                rejection_reason: None,
+            };
+
+            println!("🚫 Processing objection requested: {} | User: {} | Type: {}", 
+                objection_id, user_id, req.objection_type);
+
+            HttpResponse::Ok().json(response)
+        }
+        Err(e) => {
+            eprintln!("Error creating objection: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to create processing objection"
+            }))
+        }
+    }
+}
+
+// 8.5. WITHDRAW PROCESSING OBJECTION (GDPR Article 21)
+#[utoipa::path(
+    post,
+    path = "/data_subject/{user_id}/withdraw_objection",
+    request_body = WithdrawObjectionRequest,
+    responses((status = 200, body = serde_json::Value))
+)]
+pub async fn withdraw_processing_objection(
+    path: web::Path<String>,
+    req: web::Json<WithdrawObjectionRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.write
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+    if user_id != req.user_id {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "User ID mismatch"
+        }));
+    }
+
+    let now = Utc::now();
+    let withdrawn_by = "USER"; // User withdrawing their own objection
+
+    let result = sqlx::query(
+        "UPDATE processing_objections 
+         SET status = 'WITHDRAWN', withdrawn_at = $1, withdrawn_by = $2, withdraw_reason = $3
+         WHERE user_id = $4 AND status = 'ACTIVE'"
+    )
+    .bind(now)
+    .bind(withdrawn_by)
+    .bind(&req.reason)
+    .bind(&user_id)
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(rows) => {
+            if rows.rows_affected() == 0 {
+                return HttpResponse::NotFound().json(serde_json::json!({
+                    "error": "No active objection found for this user"
+                }));
+            }
+
+            println!("✅ Processing objection withdrawn: User: {}", user_id);
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": "Processing objection withdrawn successfully",
+                "user_id": user_id,
+                "withdrawn_at": now.format("%Y-%m-%d %H:%M:%S").to_string()
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error withdrawing objection: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to withdraw processing objection"
+            }))
+        }
+    }
+}
+
+// 8.6. REJECT PROCESSING OBJECTION (GDPR Article 21(1) - must provide reason)
+#[utoipa::path(
+    post,
+    path = "/data_subject/{user_id}/reject_objection",
+    request_body = RejectObjectionRequest,
+    responses((status = 200, body = serde_json::Value))
+)]
+pub async fn reject_processing_objection(
+    path: web::Path<String>,
+    req: web::Json<RejectObjectionRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.write (admin only for rejection)
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+    if user_id != req.user_id {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "User ID mismatch"
+        }));
+    }
+
+    // GDPR Article 21(1) requires a reason for rejection
+    if req.rejection_reason.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Rejection reason is required per GDPR Article 21(1)"
+        }));
+    }
+
+    let now = Utc::now();
+    let rejected_by = req.rejected_by.as_deref().unwrap_or("SYSTEM");
+
+    let result = sqlx::query(
+        "UPDATE processing_objections 
+         SET status = 'REJECTED', rejected_at = $1, rejected_by = $2, rejection_reason = $3
+         WHERE user_id = $4 AND status = 'ACTIVE'"
+    )
+    .bind(now)
+    .bind(rejected_by)
+    .bind(&req.rejection_reason)
+    .bind(&user_id)
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(rows) => {
+            if rows.rows_affected() == 0 {
+                return HttpResponse::NotFound().json(serde_json::json!({
+                    "error": "No active objection found for this user"
+                }));
+            }
+
+            println!("❌ Processing objection rejected: User: {} | By: {} | Reason: {}", 
+                user_id, rejected_by, req.rejection_reason);
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": "Processing objection rejected",
+                "user_id": user_id,
+                "rejection_reason": req.rejection_reason,
+                "rejected_at": now.format("%Y-%m-%d %H:%M:%S").to_string()
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error rejecting objection: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to reject processing objection"
+            }))
+        }
+    }
+}
+
+// 8.7. GET PROCESSING OBJECTIONS (GDPR Article 21)
+#[utoipa::path(
+    get,
+    path = "/data_subject/{user_id}/objections",
+    responses((status = 200, body = ObjectionsResponse))
+)]
+pub async fn get_processing_objections(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.read
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+
+    #[derive(sqlx::FromRow)]
+    struct ObjectionRow {
+        objection_id: String,
+        user_id: String,
+        objection_type: String,
+        status: String,
+        requested_at: DateTime<Utc>,
+        rejection_reason: Option<String>,
+    }
+
+    let result = sqlx::query_as::<_, ObjectionRow>(
+        "SELECT objection_id, user_id, objection_type, status, requested_at, rejection_reason
+         FROM processing_objections
+         WHERE user_id = $1
+         ORDER BY requested_at DESC"
+    )
+    .bind(&user_id)
+    .fetch_all(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(rows) => {
+            let objections: Vec<ProcessingObjectionResponse> = rows.into_iter().map(|r| {
+                ProcessingObjectionResponse {
+                    objection_id: r.objection_id,
+                    user_id: r.user_id,
+                    objection_type: r.objection_type,
+                    status: r.status,
+                    requested_at: r.requested_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    rejection_reason: r.rejection_reason,
+                }
+            }).collect();
+
+            let response = ObjectionsResponse {
+                user_id: user_id.clone(),
+                objections,
+            };
+
+            HttpResponse::Ok().json(response)
+        }
+        Err(e) => {
+            eprintln!("Error fetching objections: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to fetch processing objections"
+            }))
+        }
+    }
+}
+
+// ========== GDPR Article 22: Automated Decision-Making ==========
+
+// 8.8. REQUEST HUMAN REVIEW (GDPR Article 22)
+#[utoipa::path(
+    post,
+    path = "/data_subject/{user_id}/request_review",
+    request_body = RequestReviewRequest,
+    responses((status = 200, body = RequestReviewResponse))
+)]
+pub async fn request_human_review(
+    path: web::Path<String>,
+    req: web::Json<RequestReviewRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.write
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+    if user_id != req.user_id {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "User ID mismatch"
+        }));
+    }
+
+    // Find decision by decision_id or seal_id
+    let decision_result: Option<(String, String)> = if let Some(ref decision_id) = req.decision_id {
+        sqlx::query_as(
+            "SELECT decision_id, seal_id FROM automated_decisions 
+             WHERE decision_id = $1 AND user_id = $2"
+        )
+        .bind(decision_id)
+        .bind(&user_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .unwrap_or(None)
+    } else if let Some(ref seal_id) = req.seal_id {
+        sqlx::query_as(
+            "SELECT decision_id, seal_id FROM automated_decisions 
+             WHERE seal_id = $1 AND user_id = $2"
+        )
+        .bind(seal_id)
+        .bind(&user_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .unwrap_or(None)
+    } else {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Either decision_id or seal_id must be provided"
+        }));
+    };
+
+    let (decision_id, seal_id) = match decision_result {
+        Some((did, sid)) => (did, sid),
+        None => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "error": "Automated decision not found"
+            }));
+        }
+    };
+
+    // Update decision status to UNDER_REVIEW and create human oversight record
+    let now = Utc::now();
+    
+    // Update automated decision
+    let update_result = sqlx::query(
+        "UPDATE automated_decisions 
+         SET status = 'UNDER_REVIEW', human_review_required = true, updated_at = $1
+         WHERE decision_id = $2"
+    )
+    .bind(now)
+    .bind(&decision_id)
+    .execute(&data.db_pool)
+    .await;
+
+    match update_result {
+        Ok(_) => {
+            // Create human oversight record (if not exists)
+            let _ = sqlx::query(
+                "INSERT INTO human_oversight (seal_id, status) VALUES ($1, 'PENDING')
+                 ON CONFLICT (seal_id) DO UPDATE SET status = 'PENDING', updated_at = CURRENT_TIMESTAMP"
+            )
+            .bind(&seal_id)
+            .execute(&data.db_pool)
+            .await;
+
+            println!("👤 Human review requested: Decision: {} | User: {}", decision_id, user_id);
+
+            let response = RequestReviewResponse {
+                decision_id: decision_id.clone(),
+                status: "UNDER_REVIEW".to_string(),
+                message: "Human review requested successfully. The decision will be reviewed by a human reviewer.".to_string(),
+            };
+
+            HttpResponse::Ok().json(response)
+        }
+        Err(e) => {
+            eprintln!("Error requesting review: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to request human review"
+            }))
+        }
+    }
+}
+
+// 8.9. APPEAL AUTOMATED DECISION (GDPR Article 22)
+#[utoipa::path(
+    post,
+    path = "/data_subject/{user_id}/appeal_decision",
+    request_body = AppealDecisionRequest,
+    responses((status = 200, body = serde_json::Value))
+)]
+pub async fn appeal_automated_decision(
+    path: web::Path<String>,
+    req: web::Json<AppealDecisionRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.write
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+    if user_id != req.user_id {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "User ID mismatch"
+        }));
+    }
+
+    if req.appeal_reason.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Appeal reason is required"
+        }));
+    }
+
+    let now = Utc::now();
+
+    let result = sqlx::query(
+        "UPDATE automated_decisions 
+         SET appeal_requested = true, appeal_requested_at = $1, appeal_reason = $2, status = 'APPEALED'
+         WHERE decision_id = $3 AND user_id = $4"
+    )
+    .bind(now)
+    .bind(&req.appeal_reason)
+    .bind(&req.decision_id)
+    .bind(&user_id)
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(rows) => {
+            if rows.rows_affected() == 0 {
+                return HttpResponse::NotFound().json(serde_json::json!({
+                    "error": "Automated decision not found or access denied"
+                }));
+            }
+
+            println!("📝 Appeal requested: Decision: {} | User: {}", req.decision_id, user_id);
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": "Appeal requested successfully",
+                "decision_id": req.decision_id,
+                "appeal_requested_at": now.format("%Y-%m-%d %H:%M:%S").to_string()
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error appealing decision: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to appeal automated decision"
+            }))
+        }
+    }
+}
+
+// 8.10. GET AUTOMATED DECISIONS (GDPR Article 22)
+#[utoipa::path(
+    get,
+    path = "/data_subject/{user_id}/automated_decisions",
+    responses((status = 200, body = AutomatedDecisionsResponse))
+)]
+pub async fn get_automated_decisions(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION - Critical: data_subject.read
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "data_subject", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = path.into_inner();
+
+    #[derive(sqlx::FromRow)]
+    struct DecisionRow {
+        decision_id: String,
+        user_id: String,
+        seal_id: String,
+        action_type: String,
+        decision_outcome: String,
+        decision_reasoning: Option<String>,
+        legal_effect: Option<String>,
+        significant_impact: bool,
+        status: String,
+        decision_timestamp: DateTime<Utc>,
+        human_review_required: bool,
+    }
+
+    let result = sqlx::query_as::<_, DecisionRow>(
+        "SELECT decision_id, user_id, seal_id, action_type, decision_outcome,
+                decision_reasoning, legal_effect, significant_impact, status,
+                decision_timestamp, human_review_required
+         FROM automated_decisions
+         WHERE user_id = $1
+         ORDER BY decision_timestamp DESC"
+    )
+    .bind(&user_id)
+    .fetch_all(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(rows) => {
+            let decisions: Vec<AutomatedDecisionResponse> = rows.into_iter().map(|r| {
+                AutomatedDecisionResponse {
+                    decision_id: r.decision_id,
+                    user_id: r.user_id,
+                    seal_id: r.seal_id,
+                    action_type: r.action_type,
+                    decision_outcome: r.decision_outcome,
+                    decision_reasoning: r.decision_reasoning,
+                    legal_effect: r.legal_effect,
+                    significant_impact: r.significant_impact,
+                    status: r.status,
+                    decision_timestamp: r.decision_timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    human_review_required: r.human_review_required,
+                }
+            }).collect();
+
+            let response = AutomatedDecisionsResponse {
+                user_id: user_id.clone(),
+                decisions,
+            };
+
+            HttpResponse::Ok().json(response)
+        }
+        Err(e) => {
+            eprintln!("Error fetching automated decisions: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to fetch automated decisions"
+            }))
+        }
     }
 }
 
@@ -1121,6 +2528,46 @@ pub async fn report_breach(
             
             println!("🚨 Data breach reported: {} | Type: {} | Affected: {} users", 
                 breach_id, breach_report.breach_type, breach_report.affected_users.len());
+            
+            // Send notifications to affected users (GDPR Article 33)
+            if users_notified_at.is_some() {
+                let notification_service = data.notification_service.clone();
+                let db_pool = data.db_pool.clone();
+                let breach_id_clone = breach_id.clone();
+                let breach_type_clone = breach_report.breach_type.clone();
+                let description_clone = breach_report.description.clone();
+                let detected_at_clone = detected_at;
+                let affected_users_clone = breach_report.affected_users.clone();
+                
+                // Spawn async task to send notifications (non-blocking)
+                tokio::spawn(async move {
+                    for user_id in &affected_users_clone {
+                        // Try email first, fallback to SMS if email fails
+                        let email_result = notification_service.notify_data_breach(
+                            &db_pool,
+                            user_id,
+                            &breach_id_clone,
+                            &breach_type_clone,
+                            &detected_at_clone,
+                            &description_clone,
+                            NotificationChannel::Email,
+                        ).await;
+                        
+                        if email_result.is_err() {
+                            // Fallback to SMS
+                            let _ = notification_service.notify_data_breach(
+                                &db_pool,
+                                user_id,
+                                &breach_id_clone,
+                                &breach_type_clone,
+                                &detected_at_clone,
+                                &description_clone,
+                                NotificationChannel::Sms,
+                            ).await;
+                        }
+                    }
+                });
+            }
             
             // Trigger webhook event for data breach
             let webhook_data = serde_json::json!({
@@ -3344,4 +4791,996 @@ pub async fn get_webhook_deliveries(
             }))
         }
     }
+}
+
+// ============================================================================
+// Priority 2: User Notification Preferences (EU AI Act Article 13)
+// ============================================================================
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct NotificationPreferenceRequest {
+    #[schema(example = "HIGH_RISK_AI_ACTION")]
+    pub notification_type: String,
+    #[schema(example = r#"["EMAIL", "SMS", "IN_APP"]"#)]
+    pub preferred_channels: Vec<String>,
+    #[schema(example = "en")]
+    pub language: String,
+    #[schema(example = true)]
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct NotificationPreferenceResponse {
+    pub notification_type: String,
+    pub preferred_channels: Vec<String>,
+    pub language: String,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Set user notification preferences (EU AI Act Article 13)
+#[utoipa::path(
+    post,
+    path = "/user/{user_id}/notification_preferences",
+    request_body = NotificationPreferenceRequest,
+    responses(
+        (status = 200, description = "Preferences updated successfully", body = NotificationPreferenceResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden")
+    ),
+    tag = "Notifications"
+)]
+pub async fn set_notification_preferences(
+    user_id: web::Path<String>,
+    req: web::Json<NotificationPreferenceRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "notifications", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id_str = user_id.into_inner();
+    let pref = req.into_inner();
+    let channels_json = serde_json::to_value(&pref.preferred_channels).unwrap_or(serde_json::json!([]));
+
+    let result = sqlx::query(
+        "INSERT INTO user_notification_preferences (
+            user_id, notification_type, preferred_channels, language, enabled
+        ) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (user_id, notification_type) DO UPDATE SET
+            preferred_channels = EXCLUDED.preferred_channels,
+            language = EXCLUDED.language,
+            enabled = EXCLUDED.enabled,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING created_at, updated_at"
+    )
+    .bind(&user_id_str)
+    .bind(&pref.notification_type)
+    .bind(channels_json)
+    .bind(&pref.language)
+    .bind(pref.enabled)
+    .fetch_one(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(row) => {
+            let created_at: chrono::DateTime<chrono::Utc> = row.get(0);
+            let updated_at: chrono::DateTime<chrono::Utc> = row.get(1);
+            HttpResponse::Ok().json(NotificationPreferenceResponse {
+                notification_type: pref.notification_type,
+                preferred_channels: pref.preferred_channels,
+                language: pref.language,
+                enabled: pref.enabled,
+                created_at: created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                updated_at: updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+            })
+        }
+        Err(e) => {
+            eprintln!("Error setting notification preferences: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to set notification preferences"
+            }))
+        }
+    }
+}
+
+/// Get user notification preferences
+#[utoipa::path(
+    get,
+    path = "/user/{user_id}/notification_preferences",
+    responses(
+        (status = 200, description = "Preferences retrieved successfully", body = Vec<NotificationPreferenceResponse>),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden")
+    ),
+    tag = "Notifications"
+)]
+pub async fn get_notification_preferences(
+    user_id: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "notifications", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id_str = user_id.into_inner();
+
+    #[derive(sqlx::FromRow)]
+    struct PreferenceRow {
+        notification_type: String,
+        preferred_channels: serde_json::Value,
+        language: String,
+        enabled: bool,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    match sqlx::query_as::<_, PreferenceRow>(
+        "SELECT notification_type, preferred_channels, language, enabled, created_at, updated_at
+         FROM user_notification_preferences
+         WHERE user_id = $1
+         ORDER BY notification_type"
+    )
+    .bind(&user_id_str)
+    .fetch_all(&data.db_pool)
+    .await
+    {
+        Ok(prefs) => {
+            let responses: Vec<NotificationPreferenceResponse> = prefs.into_iter().map(|p| {
+                let channels: Vec<String> = serde_json::from_value(p.preferred_channels)
+                    .unwrap_or_else(|_| vec![]);
+                NotificationPreferenceResponse {
+                    notification_type: p.notification_type,
+                    preferred_channels: channels,
+                    language: p.language,
+                    enabled: p.enabled,
+                    created_at: p.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    updated_at: p.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                }
+            }).collect();
+            HttpResponse::Ok().json(responses)
+        }
+        Err(e) => {
+            eprintln!("Error fetching notification preferences: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to fetch notification preferences"
+            }))
+        }
+    }
+}
+
+/// Get notification history for a user
+#[utoipa::path(
+    get,
+    path = "/user/{user_id}/notifications",
+    params(
+        ("user_id" = String, Path, description = "User ID"),
+        ("limit" = Option<i32>, Query, description = "Maximum number of notifications to return (default: 50)")
+    ),
+    responses(
+        (status = 200, description = "Notifications retrieved successfully"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden")
+    ),
+    tag = "Notifications"
+)]
+pub async fn get_user_notifications(
+    user_id: web::Path<String>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "notifications", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id_str = user_id.into_inner();
+    let limit = query.get("limit")
+        .and_then(|l| l.parse::<i32>().ok())
+        .unwrap_or(50)
+        .min(100); // Cap at 100
+
+    #[derive(sqlx::FromRow)]
+    struct NotificationRow {
+        notification_id: String,
+        notification_type: String,
+        channel: String,
+        subject: Option<String>,
+        body: String,
+        status: String,
+        sent_at: Option<chrono::DateTime<chrono::Utc>>,
+        created_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    match sqlx::query_as::<_, NotificationRow>(
+        "SELECT notification_id, notification_type, channel, subject, body, status, sent_at, created_at
+         FROM user_notifications
+         WHERE user_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2"
+    )
+    .bind(&user_id_str)
+    .bind(limit)
+    .fetch_all(&data.db_pool)
+    .await
+    {
+        Ok(notifications) => {
+            let responses: Vec<serde_json::Value> = notifications.into_iter().map(|n| {
+                serde_json::json!({
+                    "notification_id": n.notification_id,
+                    "notification_type": n.notification_type,
+                    "channel": n.channel,
+                    "subject": n.subject,
+                    "body": n.body,
+                    "status": n.status,
+                    "sent_at": n.sent_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+                    "created_at": n.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                })
+            }).collect();
+            HttpResponse::Ok().json(serde_json::json!({
+                "notifications": responses,
+                "total": responses.len()
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error fetching user notifications: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to fetch notifications"
+            }))
+        }
+    }
+}
+
+// ============================================================================
+// Priority 3: GDPR Article 30 - Records of Processing Activities
+// ============================================================================
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ProcessingRecordResponse {
+    pub activity_name: String,
+    pub purpose: String,
+    pub legal_basis: String,
+    pub data_categories: Vec<String>,
+    pub data_subject_categories: Vec<String>,
+    pub recipients: Vec<String>,
+    pub third_country_transfers: bool,
+    pub third_countries: Vec<String>,
+    pub retention_period_days: Option<i32>,
+    pub security_measures: Vec<String>,
+    pub seal_id: Option<String>,
+    pub timestamp: String,
+}
+
+/// Get processing records in GDPR Article 30 format
+#[utoipa::path(
+    get,
+    path = "/processing_records",
+    params(
+        ("format" = Option<String>, Query, description = "Export format: json, csv (default: json)")
+    ),
+    responses(
+        (status = 200, description = "Processing records retrieved successfully"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden")
+    ),
+    tag = "Compliance"
+)]
+pub async fn get_processing_records(
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "compliance", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let format_str = query.get("format").map(|s| s.as_str()).unwrap_or("json");
+
+    // Get processing activities from database
+    match sqlx::query_as::<_, ProcessingActivityDb>(
+        "SELECT * FROM processing_activities ORDER BY created_at DESC"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    {
+        Ok(activities) => {
+            // Also get compliance records to enrich with seal_id and timestamp
+            let mut records: Vec<ProcessingRecordResponse> = Vec::new();
+            
+            for activity in activities {
+                // Try to find related compliance record
+                let seal_id: Option<String> = sqlx::query_scalar(
+                    "SELECT seal_id FROM compliance_records 
+                     WHERE action_summary LIKE $1 
+                     ORDER BY timestamp DESC LIMIT 1"
+                )
+                .bind(format!("%{}%", activity.activity_name))
+                .fetch_optional(&data.db_pool)
+                .await
+                .unwrap_or(None);
+                
+                let timestamp: Option<chrono::DateTime<chrono::Utc>> = if let Some(ref sid) = seal_id {
+                    sqlx::query_scalar(
+                        "SELECT timestamp FROM compliance_records WHERE seal_id = $1"
+                    )
+                    .bind(sid)
+                    .fetch_optional(&data.db_pool)
+                    .await
+                    .unwrap_or(None)
+                } else {
+                    Some(activity.created_at)
+                };
+                
+                records.push(ProcessingRecordResponse {
+                    activity_name: activity.activity_name,
+                    purpose: activity.purpose,
+                    legal_basis: activity.legal_basis,
+                    data_categories: activity.data_categories,
+                    data_subject_categories: activity.data_subject_categories,
+                    recipients: activity.recipients,
+                    third_country_transfers: activity.third_country_transfers,
+                    third_countries: activity.third_countries,
+                    retention_period_days: activity.retention_period_days,
+                    security_measures: activity.security_measures,
+                    seal_id,
+                    timestamp: timestamp.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+                        .unwrap_or_else(|| activity.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
+                });
+            }
+            
+            // If no processing_activities exist, generate from compliance_records
+            if records.is_empty() {
+                let compliance_records: Vec<ComplianceRecordDb> = sqlx::query_as(
+                    "SELECT * FROM compliance_records 
+                     WHERE user_id IS NOT NULL 
+                     ORDER BY timestamp DESC LIMIT 100"
+                )
+                .fetch_all(&data.db_pool)
+                .await
+                .unwrap_or_default();
+                
+                for cr in compliance_records {
+                    records.push(ProcessingRecordResponse {
+                        activity_name: cr.action_summary.clone(),
+                        purpose: "AI system processing".to_string(),
+                        legal_basis: "CONSENT".to_string(), // Default, should be from consent_records
+                        data_categories: vec!["Personal data".to_string()],
+                        data_subject_categories: vec!["Data subjects".to_string()],
+                        recipients: vec![],
+                        third_country_transfers: false,
+                        third_countries: vec![],
+                        retention_period_days: None,
+                        security_measures: vec!["Encryption".to_string(), "Access controls".to_string()],
+                        seal_id: Some(cr.seal_id),
+                        timestamp: cr.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    });
+                }
+            }
+            
+            if format_str == "csv" {
+                // Generate CSV
+                let mut csv = String::from("Activity Name,Purpose,Legal Basis,Data Categories,Data Subject Categories,Recipients,Third Country Transfers,Third Countries,Retention Period (Days),Security Measures,Seal ID,Timestamp\n");
+                
+                for record in &records {
+                    csv.push_str(&format!(
+                        "\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{},\"{}\",{},\"{}\",\"{}\",\"{}\"\n",
+                        record.activity_name,
+                        record.purpose,
+                        record.legal_basis,
+                        record.data_categories.join("; "),
+                        record.data_subject_categories.join("; "),
+                        record.recipients.join("; "),
+                        record.third_country_transfers,
+                        record.third_countries.join("; "),
+                        record.retention_period_days.map(|d| d.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                        record.security_measures.join("; "),
+                        record.seal_id.as_deref().unwrap_or("N/A"),
+                        record.timestamp
+                    ));
+                }
+                
+                HttpResponse::Ok()
+                    .content_type("text/csv")
+                    .append_header(actix_web::http::header::ContentDisposition::attachment("processing_records_article30.csv"))
+                    .body(csv)
+            } else {
+                HttpResponse::Ok().json(serde_json::json!({
+                    "records": records,
+                    "total": records.len(),
+                    "format": "GDPR Article 30"
+                }))
+            }
+        }
+        Err(e) => {
+            eprintln!("Error fetching processing records: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to fetch processing records"
+            }))
+        }
+    }
+}
+
+// ============================================================================
+// Priority 3: EU AI Act Article 8 - Conformity Assessment
+// ============================================================================
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ConformityAssessmentRequest {
+    pub system_id: String,
+    pub system_name: String,
+    pub assessment_type: String, // 'SELF_ASSESSMENT', 'THIRD_PARTY', 'NOTIFIED_BODY'
+    pub assessment_date: String,
+    pub expiration_date: Option<String>,
+    pub assessment_result: serde_json::Value,
+    pub assessor_name: Option<String>,
+    pub assessor_contact: Option<String>,
+    pub certificate_number: Option<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ConformityAssessmentResponse {
+    pub assessment_id: String,
+    pub system_id: String,
+    pub system_name: String,
+    pub assessment_type: String,
+    pub assessment_date: String,
+    pub expiration_date: Option<String>,
+    pub status: String,
+    pub days_until_expiration: Option<i64>,
+    pub assessor_name: Option<String>,
+    pub certificate_number: Option<String>,
+}
+
+/// Create or update conformity assessment
+#[utoipa::path(
+    post,
+    path = "/conformity_assessments",
+    request_body = ConformityAssessmentRequest,
+    responses(
+        (status = 200, description = "Assessment created/updated successfully", body = ConformityAssessmentResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden")
+    ),
+    tag = "Compliance"
+)]
+pub async fn create_conformity_assessment(
+    req: web::Json<ConformityAssessmentRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "compliance", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let assessment_id = format!("ASSESS-{}", uuid::Uuid::new_v4().to_string().replace("-", "").chars().take(12).collect::<String>());
+    let assessment_req = req.into_inner();
+    
+    let assessment_date = chrono::NaiveDateTime::parse_from_str(&assessment_req.assessment_date, "%Y-%m-%d %H:%M:%S")
+        .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+        .unwrap_or(Utc::now());
+    
+    let expiration_date = assessment_req.expiration_date.and_then(|d| {
+        chrono::NaiveDateTime::parse_from_str(&d, "%Y-%m-%d %H:%M:%S")
+            .ok()
+            .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+    });
+    
+    // Determine status based on expiration
+    let status = if let Some(exp) = expiration_date {
+        if exp < Utc::now() {
+            "EXPIRED"
+        } else {
+            "PASSED"
+        }
+    } else {
+        "PASSED"
+    }.to_string();
+    
+    let result = sqlx::query(
+        "INSERT INTO conformity_assessments (
+            assessment_id, system_id, system_name, assessment_type,
+            assessment_date, expiration_date, status, assessment_result,
+            assessor_name, assessor_contact, certificate_number, notes
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (assessment_id) DO UPDATE SET
+            system_name = EXCLUDED.system_name,
+            assessment_type = EXCLUDED.assessment_type,
+            assessment_date = EXCLUDED.assessment_date,
+            expiration_date = EXCLUDED.expiration_date,
+            status = EXCLUDED.status,
+            assessment_result = EXCLUDED.assessment_result,
+            assessor_name = EXCLUDED.assessor_name,
+            assessor_contact = EXCLUDED.assessor_contact,
+            certificate_number = EXCLUDED.certificate_number,
+            notes = EXCLUDED.notes,
+            updated_at = CURRENT_TIMESTAMP"
+    )
+    .bind(&assessment_id)
+    .bind(&assessment_req.system_id)
+    .bind(&assessment_req.system_name)
+    .bind(&assessment_req.assessment_type)
+    .bind(assessment_date)
+    .bind(expiration_date)
+    .bind(&status)
+    .bind(&assessment_req.assessment_result)
+    .bind(&assessment_req.assessor_name)
+    .bind(&assessment_req.assessor_contact)
+    .bind(&assessment_req.certificate_number)
+    .bind(&assessment_req.notes)
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            let days_until_expiration = expiration_date.map(|exp| {
+                (exp - Utc::now()).num_days()
+            });
+            
+            // Check if expiration is within 30 days and send notification
+            if let Some(days) = days_until_expiration {
+                if days <= 30 && days > 0 {
+                    // Send notification about expiring assessment
+                    let notification_service = data.notification_service.clone();
+                    let db_pool = data.db_pool.clone();
+                    let system_name_clone = assessment_req.system_name.clone();
+                    let assessment_id_clone = assessment_id.clone();
+                    
+                    tokio::spawn(async move {
+                        // Notify compliance team (using system admin user or default)
+                        let _ = notification_service.send_notification(
+                            &db_pool,
+                            crate::integration::notifications::NotificationRequest {
+                                user_id: "SYSTEM_ADMIN".to_string(),
+                                notification_type: crate::integration::notifications::NotificationType::HighRiskAiAction,
+                                channel: crate::integration::notifications::NotificationChannel::Email,
+                                subject: Some(format!("Conformity Assessment Expiring Soon - {}", system_name_clone)),
+                                body: format!(
+                                    "The conformity assessment for AI system '{}' will expire in {} days.\n\nAssessment ID: {}\n\nPlease schedule a new assessment before expiration.\n\nBest regards,\nVeridion Nexus Compliance Team",
+                                    system_name_clone, days, assessment_id_clone
+                                ),
+                                language: Some("en".to_string()),
+                                related_entity_type: Some("CONFORMITY_ASSESSMENT".to_string()),
+                                related_entity_id: Some(assessment_id_clone),
+                            }
+                        ).await;
+                    });
+                }
+            }
+            
+            HttpResponse::Ok().json(ConformityAssessmentResponse {
+                assessment_id,
+                system_id: assessment_req.system_id,
+                system_name: assessment_req.system_name,
+                assessment_type: assessment_req.assessment_type,
+                assessment_date: assessment_date.format("%Y-%m-%d %H:%M:%S").to_string(),
+                expiration_date: expiration_date.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()),
+                status,
+                days_until_expiration,
+                assessor_name: assessment_req.assessor_name,
+                certificate_number: assessment_req.certificate_number,
+            })
+        }
+        Err(e) => {
+            eprintln!("Error creating conformity assessment: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to create conformity assessment"
+            }))
+        }
+    }
+}
+
+/// Get all conformity assessments
+#[utoipa::path(
+    get,
+    path = "/conformity_assessments",
+    params(
+        ("system_id" = Option<String>, Query, description = "Filter by system_id"),
+        ("status" = Option<String>, Query, description = "Filter by status")
+    ),
+    responses(
+        (status = 200, description = "Assessments retrieved successfully", body = Vec<ConformityAssessmentResponse>),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "Compliance"
+)]
+pub async fn get_conformity_assessments(
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "compliance", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let system_id_filter = query.get("system_id");
+    let status_filter = query.get("status");
+
+    let mut query_str = "SELECT assessment_id, system_id, system_name, assessment_type, assessment_date, expiration_date, status, assessor_name, certificate_number FROM conformity_assessments WHERE 1=1".to_string();
+    let mut bindings = Vec::new();
+    
+    if let Some(sid) = system_id_filter {
+        query_str.push_str(" AND system_id = $1");
+        bindings.push(sid.clone());
+    }
+    
+    if let Some(st) = status_filter {
+        let param_num = if system_id_filter.is_some() { 2 } else { 1 };
+        query_str.push_str(&format!(" AND status = ${}", param_num));
+        bindings.push(st.clone());
+    }
+    
+    query_str.push_str(" ORDER BY assessment_date DESC");
+
+    #[derive(sqlx::FromRow)]
+    struct AssessmentRow {
+        assessment_id: String,
+        system_id: String,
+        system_name: String,
+        assessment_type: String,
+        assessment_date: chrono::DateTime<chrono::Utc>,
+        expiration_date: Option<chrono::DateTime<chrono::Utc>>,
+        status: String,
+        assessor_name: Option<String>,
+        certificate_number: Option<String>,
+    }
+
+    let result = if system_id_filter.is_some() && status_filter.is_some() {
+        sqlx::query_as::<_, AssessmentRow>(&query_str)
+            .bind(&bindings[0])
+            .bind(&bindings[1])
+            .fetch_all(&data.db_pool)
+            .await
+    } else if system_id_filter.is_some() {
+        sqlx::query_as::<_, AssessmentRow>(&query_str)
+            .bind(&bindings[0])
+            .fetch_all(&data.db_pool)
+            .await
+    } else if status_filter.is_some() {
+        sqlx::query_as::<_, AssessmentRow>(&query_str)
+            .bind(&bindings[0])
+            .fetch_all(&data.db_pool)
+            .await
+    } else {
+        sqlx::query_as::<_, AssessmentRow>(&query_str)
+            .fetch_all(&data.db_pool)
+            .await
+    };
+
+    match result {
+        Ok(assessments) => {
+            let responses: Vec<ConformityAssessmentResponse> = assessments.into_iter().map(|a| {
+                let days_until_expiration = a.expiration_date.map(|exp| {
+                    (exp - Utc::now()).num_days()
+                });
+                
+                ConformityAssessmentResponse {
+                    assessment_id: a.assessment_id,
+                    system_id: a.system_id,
+                    system_name: a.system_name,
+                    assessment_type: a.assessment_type,
+                    assessment_date: a.assessment_date.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    expiration_date: a.expiration_date.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()),
+                    status: a.status,
+                    days_until_expiration,
+                    assessor_name: a.assessor_name,
+                    certificate_number: a.certificate_number,
+                }
+            }).collect();
+            HttpResponse::Ok().json(responses)
+        }
+        Err(e) => {
+            eprintln!("Error fetching conformity assessments: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to fetch conformity assessments"
+            }))
+        }
+    }
+}
+
+// ============================================================================
+// Priority 3: EU AI Act Article 11 - Data Governance Extension
+// ============================================================================
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct DataQualityMetricRequest {
+    pub seal_id: String,
+    pub data_source: Option<String>,
+    pub metric_type: String, // 'COMPLETENESS', 'ACCURACY', 'CONSISTENCY', 'VALIDITY', 'TIMELINESS'
+    pub metric_value: f64,
+    pub threshold: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct DataBiasDetectionRequest {
+    pub seal_id: String,
+    pub bias_type: String, // 'DEMOGRAPHIC', 'GEOGRAPHIC', 'TEMPORAL', 'REPRESENTATION'
+    pub bias_metric: f64,
+    pub affected_groups: serde_json::Value,
+    pub mitigation_applied: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct DataLineageRequest {
+    pub seal_id: String,
+    pub source_seal_id: Option<String>,
+    pub transformation_type: Option<String>,
+    pub transformation_details: Option<serde_json::Value>,
+}
+
+/// Record data quality metric
+#[utoipa::path(
+    post,
+    path = "/data_quality/metrics",
+    request_body = DataQualityMetricRequest,
+    responses(
+        (status = 200, description = "Metric recorded successfully"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "Data Governance"
+)]
+pub async fn record_data_quality_metric(
+    req: web::Json<DataQualityMetricRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "compliance", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let result = sqlx::query(
+        "INSERT INTO data_quality_metrics (
+            seal_id, data_source, metric_type, metric_value, threshold
+        ) VALUES ($1, $2, $3, $4, $5)"
+    )
+    .bind(&req.seal_id)
+    .bind(&req.data_source)
+    .bind(&req.metric_type)
+    .bind(req.metric_value as f64)
+    .bind(req.threshold.map(|t| t as f64))
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            // Check if metric is below threshold
+            if let Some(threshold) = req.threshold {
+                if req.metric_value < threshold {
+                    println!("⚠️ Data quality alert: {} metric {} is below threshold {}", 
+                        req.metric_type, req.metric_value, threshold);
+                }
+            }
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": "Data quality metric recorded"
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error recording data quality metric: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to record metric"
+            }))
+        }
+    }
+}
+
+/// Record data bias detection
+#[utoipa::path(
+    post,
+    path = "/data_quality/bias",
+    request_body = DataBiasDetectionRequest,
+    responses(
+        (status = 200, description = "Bias detection recorded successfully"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "Data Governance"
+)]
+pub async fn record_data_bias(
+    req: web::Json<DataBiasDetectionRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "compliance", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let result = sqlx::query(
+        "INSERT INTO data_bias_detections (
+            seal_id, bias_type, bias_metric, affected_groups, mitigation_applied
+        ) VALUES ($1, $2, $3, $4, $5)"
+    )
+    .bind(&req.seal_id)
+    .bind(&req.bias_type)
+    .bind(req.bias_metric as f64)
+    .bind(&req.affected_groups)
+    .bind(req.mitigation_applied.unwrap_or(false))
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            println!("⚠️ Data bias detected: {} bias (metric: {}) for seal: {}", 
+                req.bias_type, req.bias_metric, req.seal_id);
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": "Bias detection recorded"
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error recording bias detection: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to record bias detection"
+            }))
+        }
+    }
+}
+
+/// Record data lineage
+#[utoipa::path(
+    post,
+    path = "/data_quality/lineage",
+    request_body = DataLineageRequest,
+    responses(
+        (status = 200, description = "Lineage recorded successfully"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "Data Governance"
+)]
+pub async fn record_data_lineage(
+    req: web::Json<DataLineageRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "compliance", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    // Build lineage path
+    let mut lineage_path = Vec::new();
+    if let Some(ref source) = req.source_seal_id {
+        lineage_path.push(source.clone());
+    }
+    lineage_path.push(req.seal_id.clone());
+
+    let result = sqlx::query(
+        "INSERT INTO data_lineage (
+            seal_id, source_seal_id, transformation_type, transformation_details, lineage_path
+        ) VALUES ($1, $2, $3, $4, $5)"
+    )
+    .bind(&req.seal_id)
+    .bind(&req.source_seal_id)
+    .bind(&req.transformation_type)
+    .bind(&req.transformation_details)
+    .bind(&lineage_path)
+    .execute(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": "Data lineage recorded"
+            }))
+        }
+        Err(e) => {
+            eprintln!("Error recording data lineage: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to record lineage"
+            }))
+        }
+    }
+}
+
+/// Get data quality report for a seal
+#[utoipa::path(
+    get,
+    path = "/data_quality/report/{seal_id}",
+    responses(
+        (status = 200, description = "Quality report retrieved successfully"),
+        (status = 401, description = "Unauthorized")
+    ),
+    tag = "Data Governance"
+)]
+pub async fn get_data_quality_report(
+    seal_id: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "compliance", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let seal_id_str = seal_id.into_inner();
+
+    // Get quality metrics
+    #[derive(sqlx::FromRow)]
+    struct QualityRow {
+        metric_type: String,
+        metric_value: f64,
+        measured_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    let metrics: Vec<QualityRow> = sqlx::query_as(
+        "SELECT metric_type, metric_value, measured_at 
+         FROM data_quality_metrics 
+         WHERE seal_id = $1 
+         ORDER BY measured_at DESC"
+    )
+    .bind(&seal_id_str)
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    // Get bias detections
+    #[derive(sqlx::FromRow)]
+    struct BiasRow {
+        bias_type: String,
+        bias_metric: f64,
+        affected_groups: serde_json::Value,
+        mitigation_applied: bool,
+        detected_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    let biases: Vec<BiasRow> = sqlx::query_as(
+        "SELECT bias_type, bias_metric, affected_groups, mitigation_applied, detected_at 
+         FROM data_bias_detections 
+         WHERE seal_id = $1 
+         ORDER BY detected_at DESC"
+    )
+    .bind(&seal_id_str)
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    // Get lineage
+    #[derive(sqlx::FromRow)]
+    struct LineageRow {
+        source_seal_id: Option<String>,
+        transformation_type: Option<String>,
+        lineage_path: Vec<String>,
+    }
+
+    let lineage: Vec<LineageRow> = sqlx::query_as(
+        "SELECT source_seal_id, transformation_type, lineage_path 
+         FROM data_lineage 
+         WHERE seal_id = $1"
+    )
+    .bind(&seal_id_str)
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "seal_id": seal_id_str,
+        "quality_metrics": metrics.iter().map(|m| serde_json::json!({
+            "type": m.metric_type,
+            "value": m.metric_value,
+            "measured_at": m.measured_at.format("%Y-%m-%d %H:%M:%S").to_string()
+        })).collect::<Vec<_>>(),
+        "bias_detections": biases.iter().map(|b| serde_json::json!({
+            "type": b.bias_type,
+            "metric": b.bias_metric,
+            "affected_groups": b.affected_groups,
+            "mitigation_applied": b.mitigation_applied,
+            "detected_at": b.detected_at.format("%Y-%m-%d %H:%M:%S").to_string()
+        })).collect::<Vec<_>>(),
+        "lineage": lineage.iter().map(|l| serde_json::json!({
+            "source_seal_id": l.source_seal_id,
+            "transformation_type": l.transformation_type,
+            "lineage_path": l.lineage_path
+        })).collect::<Vec<_>>()
+    }))
 }

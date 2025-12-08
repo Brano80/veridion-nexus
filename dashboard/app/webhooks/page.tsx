@@ -4,18 +4,34 @@ import DashboardLayout from "../components/DashboardLayout";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Webhook, Plus, Trash2, Edit, CheckCircle, XCircle } from "lucide-react";
 import { useState } from "react";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchWebhooks() {
-  const res = await fetch(`${API_BASE}/webhooks`);
+  const res = await fetch(`${API_BASE}/webhooks`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch webhooks: ${res.status}`);
+  }
   return res.json();
 }
 
 async function deleteWebhook(id: string) {
   const res = await fetch(`${API_BASE}/webhooks/${id}`, {
     method: "DELETE",
+    headers: getAuthHeaders(),
   });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to delete webhook: ${res.status}`);
+  }
   return res.json();
 }
 
@@ -215,15 +231,25 @@ export default function WebhooksPage() {
                 </button>
                 <button
                   onClick={async () => {
-                    const res = await fetch(`${API_BASE}/webhooks`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify(newWebhook),
-                    });
-                    if (res.ok) {
-                      queryClient.invalidateQueries({ queryKey: ["webhooks"] });
-                      setShowAddModal(false);
-                      setNewWebhook({ endpoint_url: "", event_types: [] });
+                    try {
+                      const res = await fetch(`${API_BASE}/webhooks`, {
+                        method: "POST",
+                        headers: getAuthHeaders(),
+                        body: JSON.stringify(newWebhook),
+                      });
+                      if (res.ok) {
+                        queryClient.invalidateQueries({ queryKey: ["webhooks"] });
+                        setShowAddModal(false);
+                        setNewWebhook({ endpoint_url: "", event_types: [] });
+                      } else {
+                        if (res.status === 401) {
+                          alert("Unauthorized - Please login");
+                        } else {
+                          alert("Failed to create webhook");
+                        }
+                      }
+                    } catch (error) {
+                      alert("Failed to create webhook");
                     }
                   }}
                   className="px-4 py-2 bg-emerald-900/50 hover:bg-emerald-800/80 text-emerald-400 border border-emerald-800 rounded-lg transition-colors"

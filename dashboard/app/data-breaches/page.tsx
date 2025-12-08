@@ -4,12 +4,22 @@ import DashboardLayout from "../components/DashboardLayout";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Shield, AlertTriangle, Clock, Users } from "lucide-react";
 import { format } from "date-fns";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchBreaches() {
-  const res = await fetch(`${API_BASE}/breaches`);
-  return res.json();
+  const res = await fetch(`${API_BASE}/breaches`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch breaches: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.data || [];
 }
 
 export default function DataBreachesPage() {

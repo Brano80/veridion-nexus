@@ -5,7 +5,8 @@
 
 ---
 
-**Verzia 3.0 | Január 2025**
+**Verzia 3.1 | Január 2025**  
+**Aktualizované:** Kompletná implementácia GDPR & EU AI Act Compliance dokončená
 
 ---
 
@@ -235,16 +236,24 @@ Veridion Nexus je organizovaný do **troch odlišných vrstiev** pre maximálnu 
 #### 2. Operational Modules (Voliteľné)
 **Môžu byť zapnuté/vypnuté** cez Module Configuration API - Plaťte len za to, čo potrebujete:
 
-- Data Subject Rights (GDPR články 15-22)
-- Human Oversight (EU AI Act článok 14)
-- Risk Assessment (EU AI Act článok 9)
-- Breach Management (GDPR články 33-34)
-- Consent Management (GDPR články 6-7)
-- DPIA Tracking (GDPR článok 35)
-- Retention Policies (GDPR článok 5(1)(e))
-- Post-Market Monitoring (EU AI Act článok 72)
-- Green AI Telemetry (EU AI Act článok 40)
-- AI-BOM (CycloneDX štandard)
+- **Data Subject Rights** (GDPR články 15-22, 18, 19, 21, 22, 30)
+  - Kompletná implementácia všetkých práv subjektov dát
+  - Processing restrictions, objections, automated decision review
+  - Export processing records (článok 30)
+- **Human Oversight** (EU AI Act článok 14)
+- **Risk Assessment** (EU AI Act článok 9)
+  - Rozšírené context-aware assessment s ML-based scoring
+- **Breach Management** (GDPR články 33-34)
+  - Automatizované notifikácie s 72-hodinovou súladnosťou
+- **Consent Management** (GDPR články 6-7)
+- **DPIA Tracking** (GDPR článok 35)
+- **Retention Policies** (GDPR článok 5(1)(e))
+- **Post-Market Monitoring** (EU AI Act článok 72)
+- **Green AI Telemetry** (EU AI Act článok 40)
+- **AI-BOM** (CycloneDX štandard)
+- **Conformity Assessment** (EU AI Act článok 8)
+- **Data Governance** (EU AI Act článok 11)
+  - Quality metrics, bias detection, lineage tracking
 
 #### 3. Integration Layer (Vždy dostupné)
 **SDKs a konektory** pre bezproblémovú integráciu:

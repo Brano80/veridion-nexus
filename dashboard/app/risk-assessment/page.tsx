@@ -16,12 +16,22 @@ import {
   Pie,
   Cell,
 } from "recharts";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchRiskData() {
-  const res = await fetch(`${API_BASE}/risks`);
-  return res.json();
+  const res = await fetch(`${API_BASE}/risks`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch risks: ${res.status}`);
+  }
+  const data = await res.json();
+  return data.data || [];
 }
 
 export default function RiskAssessmentPage() {
@@ -41,7 +51,7 @@ export default function RiskAssessmentPage() {
   }
 
   // Process data for charts
-  const riskDistribution = risks?.reduce(
+  const riskDistribution = (risks || []).reduce(
     (acc: any, risk: any) => {
       acc[risk.risk_level] = (acc[risk.risk_level] || 0) + 1;
       return acc;
@@ -55,7 +65,7 @@ export default function RiskAssessmentPage() {
     { name: "Low", value: riskDistribution?.LOW || 0, color: "#10b981" },
   ];
 
-  const timelineData = risks?.slice(0, 10).map((risk: any) => ({
+  const timelineData = (risks || []).slice(0, 10).map((risk: any) => ({
     date: risk.assessed_at?.split(" ")[0] || "N/A",
     high: risk.risk_level === "HIGH" ? 1 : 0,
     medium: risk.risk_level === "MEDIUM" ? 1 : 0,

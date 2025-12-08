@@ -18,10 +18,7 @@ CREATE TABLE IF NOT EXISTS consent_records (
     consent_text TEXT, -- The actual consent text shown to user
     version INTEGER NOT NULL DEFAULT 1, -- For tracking consent text changes
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Ensure one active consent per user per type
-    UNIQUE(user_id, consent_type, version) WHERE granted = true AND withdrawn_at IS NULL
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Consent History (for audit trail)
@@ -58,6 +55,12 @@ CREATE INDEX IF NOT EXISTS idx_consent_records_user_id ON consent_records(user_i
 CREATE INDEX IF NOT EXISTS idx_consent_records_consent_type ON consent_records(consent_type);
 CREATE INDEX IF NOT EXISTS idx_consent_records_granted ON consent_records(granted) WHERE granted = true;
 CREATE INDEX IF NOT EXISTS idx_consent_records_expires_at ON consent_records(expires_at) WHERE expires_at IS NOT NULL;
+
+-- Partial unique index: Ensure one active consent per user per type
+-- This enforces uniqueness only for granted consents that haven't been withdrawn
+CREATE UNIQUE INDEX IF NOT EXISTS idx_consent_records_unique_active 
+    ON consent_records(user_id, consent_type, version) 
+    WHERE granted = true AND withdrawn_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_consent_history_consent_record_id ON consent_history(consent_record_id);
 CREATE INDEX IF NOT EXISTS idx_consent_history_changed_at ON consent_history(changed_at);
 CREATE INDEX IF NOT EXISTS idx_processing_activities_legal_basis ON processing_activities(legal_basis);

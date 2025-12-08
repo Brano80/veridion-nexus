@@ -4,6 +4,7 @@ import DashboardLayout from "../components/DashboardLayout";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Download, Calendar, CheckCircle, AlertTriangle } from "lucide-react";
 import { useState } from "react";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
@@ -12,8 +13,13 @@ async function downloadReport(sealId?: string) {
     ? `${API_BASE}/download_report?seal_id=${sealId}`
     : `${API_BASE}/download_report`;
   
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    headers: getAuthHeaders(),
+  });
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
     throw new Error("Failed to download report");
   }
   
@@ -34,8 +40,13 @@ export default function AuditReportsPage() {
   const { data: logs, isLoading } = useQuery({
     queryKey: ["logs-for-reports"],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/logs?limit=100`);
+      const response = await fetch(`${API_BASE}/logs?limit=100`, {
+        headers: getAuthHeaders(),
+      });
       if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error("Unauthorized - Please login");
+        }
         throw new Error("Failed to fetch logs");
       }
       return response.json();
@@ -43,7 +54,7 @@ export default function AuditReportsPage() {
     refetchInterval: 30000,
   });
 
-  const records = logs?.logs || [];
+  const records = logs?.data || [];
   const uniqueSealIds = Array.from(new Set(records.map((r: any) => r.seal_id).filter(Boolean)));
 
   const handleDownload = async () => {

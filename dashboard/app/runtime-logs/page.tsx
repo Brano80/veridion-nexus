@@ -4,13 +4,19 @@ import DashboardLayout from "../components/DashboardLayout";
 import { useQuery } from "@tanstack/react-query";
 import { ScrollText, Search, Download, Filter } from "lucide-react";
 import { useState } from "react";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchLogs(page: number = 1, limit: number = 50) {
-  const response = await fetch(`${API_BASE}/logs?page=${page}&limit=${limit}`);
+  const response = await fetch(`${API_BASE}/logs?page=${page}&limit=${limit}`, {
+    headers: getAuthHeaders(),
+  });
   if (!response.ok) {
-    throw new Error("Failed to fetch logs");
+    if (response.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch logs: ${response.status}`);
   }
   return response.json();
 }
@@ -26,8 +32,8 @@ export default function RuntimeLogsPage() {
     refetchInterval: 10000, // Refresh every 10 seconds
   });
 
-  const logs = data?.logs || [];
-  const totalPages = data?.total_pages || 1;
+  const logs = data?.data || [];
+  const totalPages = data?.pagination?.total_pages || 1;
 
   const filteredLogs = logs.filter((log: any) => {
     if (!searchTerm) return true;
@@ -54,7 +60,20 @@ export default function RuntimeLogsPage() {
     return (
       <DashboardLayout>
         <div className="flex items-center justify-center h-screen">
-          <div className="text-red-400">Error loading logs</div>
+          <div className="text-center">
+            <div className="text-red-400 mb-4">Error loading logs</div>
+            <div className="text-slate-400 text-sm mb-4">
+              {error instanceof Error ? error.message : "Unknown error"}
+            </div>
+            {error instanceof Error && error.message.includes("Unauthorized") && (
+              <a
+                href="/login"
+                className="text-emerald-400 hover:text-emerald-300 underline"
+              >
+                Please login to continue
+              </a>
+            )}
+          </div>
         </div>
       </DashboardLayout>
     );

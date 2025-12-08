@@ -4,18 +4,28 @@ FROM rust:latest as builder
 WORKDIR /app
 
 # Create a dummy project to cache dependencies
-RUN cargo new --bin veridion-nexus
+# Using --lib because Cargo.toml defines [lib] section
+RUN cargo new --lib veridion-nexus
 WORKDIR /app/veridion-nexus
+
+# Create dummy main.rs for binary (since we have both lib and bin)
+RUN touch src/main.rs
 
 # Copy dependency files
 COPY Cargo.toml Cargo.lock* ./
 
 # Build dependencies (this layer will be cached if Cargo.toml doesn't change)
-RUN cargo build --release
-RUN rm src/*.rs
+# Use || true to continue even if build fails (we just want to cache deps)
+RUN cargo build --release || true
+
+# Remove dummy source files
+RUN rm -rf src/*.rs
 
 # Copy source code
 COPY src ./src
+
+# Copy migrations directory (required for sqlx::migrate! macro at compile time)
+COPY migrations ./migrations
 
 # Build the actual application
 RUN cargo build --release

@@ -4,11 +4,20 @@ import DashboardLayout from "../components/DashboardLayout";
 import { useQuery } from "@tanstack/react-query";
 import { Package, Download, FileJson } from "lucide-react";
 import { useState } from "react";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchAIBOM(systemId: string) {
-  const res = await fetch(`${API_BASE}/ai_bom/${systemId}`);
+  const res = await fetch(`${API_BASE}/ai_bom/${systemId}`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch AI-BOM: ${res.status}`);
+  }
   return res.json();
 }
 

@@ -4,13 +4,23 @@ import DashboardLayout from "../components/DashboardLayout";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle, XCircle, Clock, User } from "lucide-react";
 import { useState } from "react";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchPendingOversight() {
   // Fetch compliance records that require human oversight
-  const res = await fetch(`${API_BASE}/logs`);
-  const records = await res.json();
+  const res = await fetch(`${API_BASE}/logs`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch logs: ${res.status}`);
+  }
+  const data = await res.json();
+  const records = data.data || [];
   return records.filter(
     (r: any) => r.human_oversight_status === "PENDING"
   );
@@ -19,18 +29,30 @@ async function fetchPendingOversight() {
 async function approveAction(sealId: string, reviewerId: string, comments: string) {
   const res = await fetch(`${API_BASE}/action/${sealId}/approve`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ reviewer_id: reviewerId, comments }),
   });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to approve action: ${res.status}`);
+  }
   return res.json();
 }
 
 async function rejectAction(sealId: string, reviewerId: string, comments: string) {
   const res = await fetch(`${API_BASE}/action/${sealId}/reject`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders(),
     body: JSON.stringify({ reviewer_id: reviewerId, comments }),
   });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to reject action: ${res.status}`);
+  }
   return res.json();
 }
 

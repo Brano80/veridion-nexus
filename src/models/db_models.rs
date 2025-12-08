@@ -334,6 +334,13 @@ impl From<ComplianceRecordDb> for crate::core::annex_iv::ComplianceRecord {
             human_oversight_status: db.human_oversight_status,
             risk_level: db.risk_level,
             user_id: db.user_id,
+            // Extended Annex IV fields (defaults, can be populated from joins)
+            lifecycle_stage: None,
+            training_data_sources: None,
+            performance_metrics: None,
+            post_market_monitoring: None,
+            human_oversight_procedures: None,
+            risk_management_measures: None,
         }
     }
 }

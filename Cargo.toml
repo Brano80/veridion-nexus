@@ -31,6 +31,10 @@ actix-cors = "0.7"
 dashmap = "5"
 bcrypt = "0.15"
 futures = "0.3"
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder"] }
+tokio-native-tls = "0.3"
+actix-web-compress = "0.2"
+flate2 = "1.0"
 
 [dev-dependencies]
 actix-web = "4"

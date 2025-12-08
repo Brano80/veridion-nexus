@@ -3,11 +3,20 @@
 import DashboardLayout from "../components/DashboardLayout";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, CheckCircle, Clock, AlertTriangle } from "lucide-react";
+import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 async function fetchDPIAs() {
-  const res = await fetch(`${API_BASE}/dpias`);
+  const res = await fetch(`${API_BASE}/dpias`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    throw new Error(`Failed to fetch DPIAs: ${res.status}`);
+  }
   return res.json();
 }
 
