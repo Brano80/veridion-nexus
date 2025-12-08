@@ -27,16 +27,29 @@ Veridion Nexus is organized into **three distinct layers** for maximum flexibili
 
 **Can be enabled/disabled** via Module Configuration API - Pay only for what you need:
 
-- Data Subject Rights (GDPR Articles 15-22)
-- Human Oversight (EU AI Act Article 14)
-- Risk Assessment (EU AI Act Article 9)
-- Breach Management (GDPR Articles 33-34)
-- Consent Management (GDPR Articles 6-7)
-- DPIA Tracking (GDPR Article 35)
-- Retention Policies (GDPR Article 5(1)(e))
-- Post-Market Monitoring (EU AI Act Article 72)
-- Green AI Telemetry (EU AI Act Article 40)
-- AI-BOM (CycloneDX Standard)
+- **Data Subject Rights** (GDPR Articles 15-22, 18, 19, 21, 22, 30)
+  - Complete implementation: Access, Export, Rectification, Erasure
+  - Processing Restrictions (Article 18)
+  - Processing Objections (Article 21)
+  - Automated Decision Review (Article 22)
+  - Processing Records Export (Article 30)
+- **Human Oversight** (EU AI Act Article 14)
+- **Risk Assessment** (EU AI Act Article 9)
+  - Enhanced context-aware assessment with ML-based scoring
+- **Breach Management** (GDPR Articles 33-34)
+  - Automated notifications with 72-hour compliance
+- **Consent Management** (GDPR Articles 6-7)
+- **DPIA Tracking** (GDPR Article 35)
+- **Retention Policies** (GDPR Article 5(1)(e))
+- **Post-Market Monitoring** (EU AI Act Article 72)
+- **Green AI Telemetry** (EU AI Act Article 40)
+- **AI-BOM** (CycloneDX Standard)
+- **Conformity Assessment** (EU AI Act Article 8)
+- **Data Governance** (EU AI Act Article 11)
+  - Quality metrics, bias detection, lineage tracking
+- **Notification Service** (GDPR Article 33, EU AI Act Article 13)
+  - SMTP email, Twilio SMS, in-app notifications
+  - Multi-language support, user preferences
 
 ### 3. Integration Layer (Always Available)
 
@@ -99,24 +112,45 @@ The API will be available at `http://localhost:8080`
 #### Compliance Logging
 - `POST /api/v1/log_action` - Log a high-risk AI action
 - `GET /api/v1/logs` - Retrieve compliance log history
-- `GET /api/v1/download_report` - Download Annex IV PDF report
+- `GET /api/v1/download_report?format=pdf|json|xml` - Download Annex IV report (PDF/JSON/XML)
 
-#### GDPR Compliance (Priority 1)
+#### GDPR Compliance (Priority 1 & 3)
 - `GET /api/v1/data_subject/{user_id}/access` - Right to access (GDPR Article 15)
 - `GET /api/v1/data_subject/{user_id}/export` - Data portability (GDPR Article 20)
 - `PUT /api/v1/data_subject/{user_id}/rectify` - Right to rectification (GDPR Article 16)
 - `POST /api/v1/shred_data` - Right to be forgotten (GDPR Article 17)
+- `POST /api/v1/data_subject/{user_id}/restrict` - Right to restriction (GDPR Article 18)
+- `POST /api/v1/data_subject/{user_id}/lift_restriction` - Lift processing restriction
+- `GET /api/v1/data_subject/{user_id}/restrictions` - Get processing restrictions
+- `POST /api/v1/data_subject/{user_id}/object` - Right to object (GDPR Article 21)
+- `POST /api/v1/data_subject/{user_id}/withdraw_objection` - Withdraw objection
+- `GET /api/v1/data_subject/{user_id}/objections` - Get processing objections
+- `POST /api/v1/automated_decision/{seal_id}/request_review` - Request human review (GDPR Article 22)
+- `POST /api/v1/automated_decision/{seal_id}/appeal` - Appeal automated decision
+- `GET /api/v1/automated_decisions` - Get automated decisions
+- `GET /api/v1/processing_records` - Records of processing activities (GDPR Article 30)
+- `GET /api/v1/processing_records/export` - Export processing records (CSV)
 
-#### EU AI Act Compliance (Priority 1)
+#### EU AI Act Compliance (Priority 1 & 3)
 - `POST /api/v1/action/{seal_id}/require_approval` - Require human oversight
 - `POST /api/v1/action/{seal_id}/approve` - Approve action (Human Oversight)
 - `POST /api/v1/action/{seal_id}/reject` - Reject action (Human Oversight)
 - `GET /api/v1/risk_assessment/{seal_id}` - Get risk assessment (EU AI Act Article 9)
 - `GET /api/v1/risks` - Get all risk assessments
+- `POST /api/v1/conformity_assessments` - Create/update conformity assessment (EU AI Act Article 8)
+- `GET /api/v1/conformity_assessments` - Get conformity assessments
+- `POST /api/v1/data_quality/metrics` - Record data quality metric (EU AI Act Article 11)
+- `POST /api/v1/data_quality/bias` - Record data bias detection
+- `POST /api/v1/data_quality/lineage` - Record data lineage
+- `GET /api/v1/data_quality/report/{seal_id}` - Get data quality report
 
 #### Data Breach Management (Priority 1)
 - `POST /api/v1/breach_report` - Report data breach (GDPR Articles 33-34)
 - `GET /api/v1/breaches` - List all breaches
+
+#### Notification Service (Priority 1 & 3)
+- `POST /api/v1/data_subject/{user_id}/notification_preferences` - Set notification preferences
+- `GET /api/v1/data_subject/{user_id}/notification_preferences` - Get notification preferences
 
 #### System Management
 - `POST /api/v1/revoke_access` - System lockdown (Kill switch)
@@ -142,19 +176,26 @@ The API will be available at `http://localhost:8080`
 - ✅ **Article 15** - Right of access
 - ✅ **Article 16** - Right to rectification
 - ✅ **Article 17** - Right to erasure ("Right to be Forgotten")
+- ✅ **Article 18** - Right to restriction of processing
+- ✅ **Article 19** - Notification of rectification/erasure
 - ✅ **Article 20** - Right to data portability
+- ✅ **Article 21** - Right to object
+- ✅ **Article 22** - Automated decision-making (human review)
 - ✅ **Article 25** - Data protection by design
+- ✅ **Article 30** - Records of processing activities
 - ✅ **Article 32** - Security of processing
 - ✅ **Article 33-34** - Data breach notification
 
 ### EU AI Act Compliance
-- ✅ **Article 9** - Risk management system
+- ✅ **Article 8** - Conformity assessment
+- ✅ **Article 9** - Risk management system (Enhanced with ML-based scoring)
 - ✅ **Article 10** - Data governance (Sovereign Lock)
-- ✅ **Article 13** - Transparency requirements
+- ✅ **Article 11** - Data governance (Quality metrics, bias detection, lineage)
+- ✅ **Article 13** - Transparency requirements (Notification service)
 - ✅ **Article 14** - Human oversight
 - ✅ **Article 40** - Energy efficiency reporting (Green AI Telemetry)
 - ✅ **Article 72** - Post-market monitoring
-- ✅ **Annex IV** - Technical documentation (Automated PDF generation)
+- ✅ **Annex IV** - Technical documentation (Automated PDF/JSON/XML generation)
 
 ### eIDAS Compliance
 - ✅ **Article 36** - Qualified Electronic Seals
@@ -191,6 +232,16 @@ SIGNICAT_CLIENT_ID=your_client_id     # Signicat OAuth2 Client ID
 SIGNICAT_CLIENT_SECRET=your_secret    # Signicat OAuth2 Client Secret
 SIGNICAT_TOKEN_URL=https://api.signicat.com/auth/open/connect/token
 SIGNICAT_API_URL=https://api.signicat.com/sign/documents
+
+# Notification Service (Optional)
+SMTP_HOST=smtp.example.com           # SMTP server hostname
+SMTP_PORT=587                        # SMTP port (usually 587 for TLS)
+SMTP_USERNAME=your_smtp_username     # SMTP authentication username
+SMTP_PASSWORD=your_smtp_password     # SMTP authentication password
+SMTP_FROM=noreply@veridion.nexus    # From email address
+TWILIO_ACCOUNT_SID=your_account_sid  # Twilio Account SID
+TWILIO_AUTH_TOKEN=your_auth_token    # Twilio Auth Token
+TWILIO_FROM_NUMBER=+1234567890       # Twilio phone number
 
 # Logging
 RUST_LOG=info                         # Log level: trace, debug, info, warn, error
@@ -261,6 +312,72 @@ veridion-nexus/
   - Automatic system health status tracking
   - Incident tracking and resolution management
   - Performance and compliance metrics monitoring
+
+### ✅ Implemented (Priority 3 - Complete GDPR & EU AI Act Compliance)
+- **Notification Service (GDPR Article 33, EU AI Act Article 13)** - Multi-channel notification system
+  - SMTP email notifications (lettre crate)
+  - Twilio SMS notifications
+  - In-app notifications
+  - Multi-language support (English, Slovak, extensible)
+  - User notification preferences
+  - Retry logic with exponential backoff
+  - Endpoints: `POST /api/v1/data_subject/{user_id}/notification_preferences`, `GET /api/v1/data_subject/{user_id}/notification_preferences`
+
+- **GDPR Article 18 - Right to Restriction of Processing**
+  - Endpoints: `POST /api/v1/data_subject/{user_id}/restrict`, `POST /api/v1/data_subject/{user_id}/lift_restriction`, `GET /api/v1/data_subject/{user_id}/restrictions`
+  - Automatic enforcement in `log_action` endpoint
+  - Restriction history and audit trail
+
+- **GDPR Article 19 - Notification of Rectification/Erasure**
+  - Automatic notifications to data recipients
+  - Data recipients tracking
+  - Notification status management
+
+- **GDPR Article 21 - Right to Object**
+  - Endpoints: `POST /api/v1/data_subject/{user_id}/object`, `POST /api/v1/data_subject/{user_id}/withdraw_objection`, `GET /api/v1/data_subject/{user_id}/objections`
+  - Automatic enforcement in `log_action` endpoint
+  - Objection workflow and status tracking
+
+- **GDPR Article 22 - Automated Decision-Making**
+  - Endpoints: `POST /api/v1/automated_decision/{seal_id}/request_review`, `POST /api/v1/automated_decision/{seal_id}/appeal`, `GET /api/v1/automated_decisions`
+  - Automatic detection of automated decisions
+  - Human review workflow
+  - Appeal process
+
+- **GDPR Article 30 - Records of Processing Activities**
+  - Endpoints: `GET /api/v1/processing_records`, `GET /api/v1/processing_records/export`
+  - CSV export for DPO reporting
+  - Automatic record generation from compliance logs
+
+- **EU AI Act Article 8 - Conformity Assessment**
+  - Endpoints: `POST /api/v1/conformity_assessments`, `GET /api/v1/conformity_assessments`
+  - Assessment tracking and expiration management
+  - Automated notifications (30 days before expiration)
+  - Multiple assessment types (self-assessment, third-party, notified body)
+
+- **EU AI Act Article 9 - Enhanced Risk Assessment**
+  - Context-aware risk assessment with ML-based scoring
+  - Historical data analysis
+  - Dynamic risk factors weighting
+  - User behavior risk analysis
+  - Risk prediction and mitigation suggestions
+
+- **EU AI Act Article 11 - Data Governance Extension**
+  - Endpoints: `POST /api/v1/data_quality/metrics`, `POST /api/v1/data_quality/bias`, `POST /api/v1/data_quality/lineage`, `GET /api/v1/data_quality/report/{seal_id}`
+  - Data quality metrics tracking (completeness, accuracy, consistency, validity, timeliness)
+  - Data bias detection (demographic, geographic, temporal, representation)
+  - Data lineage tracking (source tracking, transformation history)
+
+- **Annex IV Extended Reports**
+  - Multi-format export: PDF, JSON, XML
+  - Extended fields: lifecycle stages, training data sources, performance metrics, post-market monitoring, human oversight procedures, risk management measures
+  - Endpoint: `GET /api/v1/download_report?format=pdf|json|xml`
+
+- **Performance Optimization**
+  - API response compression (actix-web-compress)
+  - Database query optimization (existing indexes, materialized views)
+  - Background job processing (tokio::spawn)
+  - Connection pooling tuning (sqlx)
 
 ### ✅ Implemented (Enterprise Features)
 - **AI-BOM Export (CycloneDX v1.5)** - Standardized AI/ML Bill of Materials export
