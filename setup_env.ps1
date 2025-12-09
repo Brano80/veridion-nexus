@@ -1,11 +1,11 @@
 # setup_env.ps1 - Auto-generate .env file with secure values (PowerShell)
 
 if (Test-Path .env) {
-    Write-Host "⚠️  .env already exists. Delete it first if you want to regenerate." -ForegroundColor Yellow
+    Write-Host ".env already exists. Delete it first if you want to regenerate." -ForegroundColor Yellow
     exit 1
 }
 
-Write-Host "🔧 Generating .env file with secure random values..." -ForegroundColor Cyan
+Write-Host "Generating .env file with secure random values..." -ForegroundColor Cyan
 
 # Generate secure random values
 function Get-RandomHex {
@@ -50,7 +50,7 @@ USE_REAL_API=false
 
 $envContent | Out-File -FilePath .env -Encoding utf8 -NoNewline
 
-Write-Host "✅ .env file created successfully!" -ForegroundColor Green
+Write-Host ".env file created successfully!" -ForegroundColor Green
 Write-Host ""
 Write-Host "To start Veridion Nexus:"
 Write-Host "  docker-compose up --build"
