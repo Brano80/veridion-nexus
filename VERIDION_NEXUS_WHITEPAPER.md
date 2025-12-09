@@ -95,7 +95,7 @@ Veridion Nexus is a Rust-based middleware protocol that enforces compliance thro
 **Seed Round: €500K - €1M**
 - Product development & EU AI Act certification
 - Initial sales & marketing
-- Team expansion (6 engineers, 2 sales)
+- Engineering & Product Development
 
 **Use of Funds**: 60% Product, 25% Sales & Marketing, 15% Operations
 
@@ -1185,9 +1185,9 @@ Veridion Nexus supports three deployment modes to fit different use cases:
 ### Branislav Ambrož - Lead Architect & Founder
 
 **Background**:
-- [Relevant experience in compliance, AI, or enterprise software]
-- [Previous company/role]
-- [Education/credentials]
+- Expert in compliance, AI, and enterprise software architecture
+- Extensive experience in systems programming and security
+- Deep knowledge of EU regulations (GDPR, EU AI Act, eIDAS)
 
 **Role**: Product vision, technical architecture, fundraising, strategic partnerships
 
@@ -1288,7 +1288,7 @@ Veridion Nexus supports three deployment modes to fit different use cases:
 **Mitigation**: 
 - Modular architecture allows rapid updates
 - Close relationship with regulatory bodies
-- Advisory board with regulatory expertise
+- Regulatory expertise and compliance guidance
 
 ### Risk: QTSP Partner Changes Pricing/Terms
 
@@ -1704,11 +1704,11 @@ The project includes a demonstration Python agent (`uipath_agent.py`) that simul
 
 ## C. Customer Testimonials
 
-*[To be added after beta program]*
+*Customer testimonials will be added as the beta program progresses.*
 
 ## D. Case Studies
 
-*[To be added after customer deployments]*
+*Case studies will be added following customer deployments.*
 
 ## E. Regulatory Compliance
 

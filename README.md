@@ -630,9 +630,9 @@ For production deployments where you need:
 
 ### Contact for Commercial Licensing
 
-📧 **Sales Inquiry**: sales@veridion.nexus (or email the maintainer directly)
+📧 **Sales Inquiry**: sales@veridion.nexus
 
-💼 **Partnership**: sales@veridion.nexus (or email the maintainer directly)
+💼 **Partnership**: sales@veridion.nexus
 
 ---
 
@@ -650,7 +650,7 @@ For production deployments where you need:
 
 ### For Companies
 
-- 📧 **Contact**: sales@veridion.nexus (or email the maintainer directly)
+- 📧 **Contact**: sales@veridion.nexus
 
 - 💼 **Early Adopter Program**: First 10 customers get 50% off
 
