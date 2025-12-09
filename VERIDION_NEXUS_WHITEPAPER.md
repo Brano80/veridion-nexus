@@ -1182,7 +1182,7 @@ Veridion Nexus supports three deployment modes to fit different use cases:
 
 ## Founder
 
-### [Founder Name] - Lead Architect & Founder
+### Branislav Ambrož - Lead Architect & Founder
 
 **Background**:
 - [Relevant experience in compliance, AI, or enterprise software]
