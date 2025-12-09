@@ -34,7 +34,9 @@
 
 ## The Opportunity
 
-**Veridion Nexus** is a revolutionary compliance middleware platform that solves a critical problem facing enterprises deploying High-Risk AI systems in the European Union: **How to ensure technical compliance with the EU AI Act, GDPR, and eIDAS regulations at the network level, not just through process and policy.**
+**While the EU AI Act looms in the future, DORA (Digital Operational Resilience Act) is enforceable as of January 2025.** Financial entities are now legally required to map, monitor, and control all ICT third-party risks—including external AI models. Manual compliance registers cannot track dynamic AI agents that call external APIs at runtime, creating "shadow AI" supply chains that violate DORA Article 28.
+
+**Veridion Nexus** is a revolutionary compliance middleware platform that solves a critical problem facing financial entities deploying AI systems: **How to ensure technical compliance with DORA (2025) and EU AI Act (2027) at the network level, not just through process and policy.**
 
 The EU AI Act, which becomes fully enforceable in 2026, mandates strict compliance requirements for High-Risk AI systems, including:
 - **Data Sovereignty**: Data must remain within EU/EEA jurisdictions
@@ -46,12 +48,13 @@ The EU AI Act, which becomes fully enforceable in 2026, mandates strict complian
 
 ## The Solution
 
-Veridion Nexus is a Rust-based middleware protocol that enforces compliance through four integrated modules:
+Veridion Nexus is a Rust-based middleware protocol that enforces compliance through five integrated modules:
 
 1. **Sovereign Lock**: Network-level geofencing that blocks data transfers to non-EU jurisdictions
 2. **Crypto-Shredder**: Envelope encryption enabling GDPR "Right to be Forgotten" in immutable logs
 3. **Privacy Bridge**: Local hashing + eIDAS Qualified Electronic Seals without exposing data
 4. **Annex IV Compiler**: Automated generation of legally binding compliance documentation
+5. **DORA Register of Information**: Automated mapping of all AI supply chain dependencies (Agent ID → Model Provider → Region) for Article 28 reporting
 
 ## Market Opportunity
 
@@ -64,7 +67,8 @@ Veridion Nexus is a Rust-based middleware protocol that enforces compliance thro
 ## Investment Highlights
 
 - **First-Mover Advantage**: Only technical runtime enforcement solution for EU AI Act
-- **Regulatory Tailwind**: EU AI Act enforcement starting 2026 creates urgent demand
+- **Dual Regulatory Tailwind**: DORA enforcement (2025) + EU AI Act (2027) creates immediate and sustained demand
+- **DORA Article 28 Compliance**: Immediate market need for financial entities to track AI third-party risk
 - **High Switching Costs**: Deep integration with customer systems creates lock-in
 - **Scalable SaaS Model**: 85% gross margins, recurring revenue
 - **Proven Technology**: Production-ready platform with:
@@ -139,6 +143,18 @@ GDPR Article 17 ("Right to be Forgotten") requires that personal data be erased 
 ### The eIDAS Requirement
 
 eIDAS Regulation (EU 910/2014) requires **Qualified Electronic Seals (QES)** for legally binding digital documents. However, traditional QES solutions require sending sensitive data to cloud providers, violating data sovereignty requirements.
+
+### The DORA Immediacy (Jan 2025)
+
+**DORA Article 28** requires financial entities to manage the risk of third-party ICT providers. AI agents that dynamically call APIs (OpenAI, Anthropic, Azure AI) create "Shadow Supply Chains" that manual registers cannot track.
+
+**The Problem:**
+- AI agents make runtime decisions about which external APIs to call
+- Manual DORA registers are static and cannot capture dynamic third-party interactions
+- Financial entities face penalties of up to 1% of daily turnover for non-compliance
+- Traditional compliance tools (OneTrust, TrustArc) cannot track runtime AI behavior
+
+**Veridion Nexus provides the runtime governance layer** to ensure no unauthorized third-party AI service is ever contacted, automatically logging all interactions for DORA Register compliance.
 
 ### Current Solutions Are Inadequate
 

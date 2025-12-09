@@ -1,6 +1,6 @@
 # VERIDION NEXUS
 
-**Runtime AI Governance for DORA & EU AI Act. Enforce compliance physically, not just legally.**
+**DORA-Compliant AI Governance for Financial Entities** • Technical Enforcement of DORA Article 28 (2025) + EU AI Act (2027)
 
 Make EU AI Act violations technically impossible, not just policy violations.
 
@@ -12,17 +12,22 @@ Make EU AI Act violations technically impossible, not just policy violations.
 
 ## The Problem
 
-Traditional compliance = policies + audits → 6-12 months → €260K → **Violations still possible**
+**DORA is enforceable *now* (Jan 2025).** Financial entities must control ICT third-party risk (Article 28) for their AI supply chain or face penalties of up to 1% of daily turnover.
 
-Veridion Nexus = 3-line integration → 2 weeks → **Violations technically impossible**
+**The Gap:** Manual DORA registers cannot track dynamic AI agents that call external APIs at runtime. Traditional compliance (policies + audits) cannot track "shadow AI" usage.
 
-**Target**: Fintech & insurtech companies preparing for December 2027 EU AI Act deadline
+**Veridion Nexus** = The only technical control that physically blocks non-compliant AI traffic (Sovereign Lock) and logs all third-party interactions for your DORA Register of Information.
+
+**Target**: Financial entities (banks, fintech, insurers) requiring immediate DORA compliance + future EU AI Act readiness (2027).
 
 ---
 
 ## Core Value Proposition
 
 **Runtime Enforcement of Compliance** - Instead of relying on policies and audits, Veridion Nexus provides **technical guarantees** that make it physically impossible for AI agents to violate EU regulations.
+
+- **DORA Ready (2025):** Acts as a mandatory technical control for ICT Third-Party Risk Management, preventing "shadow AI" usage and automatically generating DORA Register entries
+- **EU AI Act Ready (2027):** Future-proofs your compliance with technical enforcement of data sovereignty, human oversight, and automated documentation
 
 ## Architecture
 
@@ -197,7 +202,12 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
 - **Article 32** - Security of processing
 - **Article 33-34** - Data breach notification
 
-### EU AI Act Compliance
+### DORA & EU AI Act Compliance
+
+#### DORA Compliance
+- **Article 28** - Management of ICT Third-Party Risk (Runtime Vendor Verification & DORA Register)
+
+#### EU AI Act Compliance
 - **Article 8** - Conformity assessment
 - **Article 9** - Risk management system (Enhanced with ML-based scoring)
 - **Article 10** - Data governance (Sovereign Lock)
