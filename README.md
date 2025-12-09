@@ -29,6 +29,8 @@ Make EU AI Act violations technically impossible, not just policy violations.
 - **DORA Ready (2025):** Acts as a mandatory technical control for ICT Third-Party Risk Management, preventing "shadow AI" usage and automatically generating DORA Register entries
 - **EU AI Act Ready (2027):** Future-proofs your compliance with technical enforcement of data sovereignty, human oversight, and automated documentation
 
+![Sovereign Lock Demo](docs/images/sovereign-lock-demo.gif)
+
 ## Architecture
 
 Veridion Nexus is organized into **three distinct layers** for maximum flexibility and adoption:
@@ -426,6 +428,8 @@ veridion-nexus/
   - Responsive design for desktop and mobile
   - Dark theme interface
   - Available at `http://localhost:3000` (when running `npm run dev` in `dashboard/` directory)
+
+![Dashboard Demo](docs/images/compliance-dashboard-demo.gif)
 
 - **Performance Optimization** - Production-ready performance enhancements
   - **Database Indexes**: 20+ indexes on frequently queried columns
