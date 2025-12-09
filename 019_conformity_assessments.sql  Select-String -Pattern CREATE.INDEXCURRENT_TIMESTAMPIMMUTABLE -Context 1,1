@@ -1,0 +1,15 @@
+[1mdiff --git a/migrations/019_conformity_assessments.sql b/migrations/019_conformity_assessments.sql[m
+[1mindex d75cbdf..7c76d2b 100644[m
+[1m--- a/migrations/019_conformity_assessments.sql[m
+[1m+++ b/migrations/019_conformity_assessments.sql[m
+[36m@@ -23,8 +23,8 @@[m [mCREATE TABLE IF NOT EXISTS conformity_assessments ([m
+ CREATE INDEX IF NOT EXISTS idx_conformity_assessments_system_id ON conformity_assessments(system_id);[m
+ CREATE INDEX IF NOT EXISTS idx_conformity_assessments_status ON conformity_assessments(status);[m
+ CREATE INDEX IF NOT EXISTS idx_conformity_assessments_expiration ON conformity_assessments(expiration_date) WHERE expiration_date IS NOT NULL;[m
+[31m-CREATE INDEX IF NOT EXISTS idx_conformity_assessments_expiring_soon ON conformity_assessments(expiration_date) [m
+[31m-    WHERE expiration_date IS NOT NULL AND expiration_date > CURRENT_TIMESTAMP AND expiration_date < CURRENT_TIMESTAMP + INTERVAL '30 days';[m
+[32m+[m[32m-- Note: Cannot use CURRENT_TIMESTAMP in index predicate (must be IMMUTABLE)[m
+[32m+[m[32m-- Use idx_conformity_assessments_expiration and filter in queries: WHERE expiration_date > CURRENT_TIMESTAMP AND expiration_date < CURRENT_TIMESTAMP + INTERVAL '30 days'[m
+ [m
+ -- Function to update updated_at timestamp[m
+ CREATE OR REPLACE FUNCTION update_conformity_assessments_updated_at()[m
