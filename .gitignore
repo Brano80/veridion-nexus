@@ -1,7 +1,112 @@
-/target
+# Rust build artifacts
+/target/
 **/*.rs.bk
+Cargo.lock
+
+# Environment files
 .env
-.idea
-.vscode
+.env.*
+!.env.example
+*.env.local
+*.env.*.local
+
+# Secrets and keys
+*.key
 *.pem
-*.pdf
+*.p12
+*.pfx
+*.cert
+secrets/
+credentials.json
+config/production.*
+config/*.secret
+
+# Database
+*.sql
+*.dump
+*.bak
+*.backup
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm
+.eslintcache
+.next/
+out/
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+scratch/
+temp/
+tmp/
+
+# PDF files (if they contain sensitive data)
+# Uncomment if PDFs should not be tracked:
+# *.pdf
+
+# Test reports (may contain sensitive data)
+test_report.pdf
+server_report.pdf
+
+# Backup files
+*.orig
+*.rej
+*~
+
+# Docker
+.dockerignore
+
+# Local configuration
+local_config.*
+local.*

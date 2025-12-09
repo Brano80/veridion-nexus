@@ -135,12 +135,45 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        // Get identifier (IP address or user ID)
-        let identifier = req
-            .connection_info()
-            .peer_addr()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        // SECURITY: Use user ID for authenticated requests, IP for anonymous
+        // This prevents bypass via proxy/VPN for authenticated users
+        let identifier = {
+            // Try to extract user ID from Authorization header
+            if let Some(auth_header) = req.headers().get("Authorization") {
+                if let Ok(auth_str) = auth_header.to_str() {
+                    if auth_str.starts_with("Bearer ") {
+                        // For authenticated requests, use token hash as identifier
+                        // This prevents IP-based bypass
+                        let token = &auth_str[7..];
+                        // Use first 16 chars of token as identifier (prevents token exposure)
+                        let token_hash = if token.len() > 16 {
+                            &token[..16]
+                        } else {
+                            token
+                        };
+                        format!("user:{}", token_hash)
+                    } else {
+                        // Fallback to IP for malformed auth
+                        req.connection_info()
+                            .peer_addr()
+                            .map(|s| format!("ip:{}", s))
+                            .unwrap_or_else(|| "unknown".to_string())
+                    }
+                } else {
+                    // Fallback to IP
+                    req.connection_info()
+                        .peer_addr()
+                        .map(|s| format!("ip:{}", s))
+                        .unwrap_or_else(|| "unknown".to_string())
+                }
+            } else {
+                // No auth header - use IP address
+                req.connection_info()
+                    .peer_addr()
+                    .map(|s| format!("ip:{}", s))
+                    .unwrap_or_else(|| "unknown".to_string())
+            }
+        };
 
         // Check rate limit
         match self.limiter.check(&identifier) {

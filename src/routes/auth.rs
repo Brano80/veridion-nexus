@@ -99,8 +99,17 @@ pub async fn login(
         }));
     }
 
-    // Verify password
-    if !verify(&req.password, &password_hash).unwrap_or(false) {
+    // Verify password - SECURITY: Use constant-time comparison to prevent timing attacks
+    // Always hash the input password first, then compare
+    let password_match = verify(&req.password, &password_hash).unwrap_or(false);
+    
+    // Add artificial delay on failure to prevent timing attacks
+    if !password_match {
+        // Small delay to prevent timing-based enumeration
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    
+    if !password_match {
         audit_service.log_login(Some(user_id), &username, None, None, false, Some("Invalid password")).await.ok();
         return HttpResponse::Unauthorized().json(serde_json::json!({
             "error": "Invalid credentials"

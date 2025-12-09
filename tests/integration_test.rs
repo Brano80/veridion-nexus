@@ -14,9 +14,10 @@ use veridion_nexus::compliance_models::{
 async fn create_test_state() -> AppState {
     std::env::set_var("VERIDION_MASTER_KEY", "test_master_key_for_testing_only_32_bytes_long");
     
-    // Use test database or fallback to main database
+    // Use test database URL from environment (required for tests)
     let database_url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://veridion:veridion_password@localhost:5432/veridion_nexus".to_string());
+        .unwrap_or_else(|_| std::env::var("DATABASE_URL")
+            .expect("Either TEST_DATABASE_URL or DATABASE_URL must be set for integration tests"));
     
     AppState::new(&database_url).await
         .expect("Failed to create test AppState. Make sure PostgreSQL is running.")

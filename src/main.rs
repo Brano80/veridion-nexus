@@ -156,9 +156,9 @@ async fn main() -> std::io::Result<()> {
     println!("🚀 Veridion Nexus API starting on port 8080");
     println!("📚 Swagger UI available at: http://localhost:8080/swagger-ui/");
 
-    // Get database URL from environment or use default
+    // Get database URL from environment (required, no default)
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://veridion:veridion_password@localhost:5432/veridion_nexus".to_string());
+        .expect("DATABASE_URL environment variable must be set. See .env.example for configuration.");
 
     println!("📊 Connecting to database...");
     let app_state = match api_state::AppState::new(&database_url).await {
@@ -201,20 +201,33 @@ async fn main() -> std::io::Result<()> {
     });
 
     HttpServer::new(move || {
-        // CORS configuration - use environment variable for production
+        // CORS configuration - SECURITY: Never allow * in production
         let allowed_origins = std::env::var("ALLOWED_ORIGINS")
-            .unwrap_or_else(|_| "*".to_string());
+            .unwrap_or_else(|_| {
+                // In production, this should be set explicitly
+                if std::env::var("RUST_ENV").unwrap_or_default() == "production" {
+                    panic!("ALLOWED_ORIGINS must be set in production environment");
+                }
+                "*".to_string() // Only allow * in development
+            });
         
         let cors = if allowed_origins == "*" {
-            // Development mode - allow any origin
+            // Development mode only - allow any origin
+            // SECURITY WARNING: This should never be used in production
+            if std::env::var("RUST_ENV").unwrap_or_default() == "production" {
+                panic!("CORS wildcard (*) is not allowed in production. Set ALLOWED_ORIGINS to specific origins.");
+            }
             Cors::default()
                 .allow_any_origin()
                 .allow_any_method()
                 .allow_any_header()
                 .max_age(3600)
         } else {
-            // Production mode - specific origins
+            // Production mode - specific origins only
             let origins: Vec<&str> = allowed_origins.split(',').map(|s| s.trim()).collect();
+            if origins.is_empty() {
+                panic!("ALLOWED_ORIGINS must contain at least one origin");
+            }
             let mut cors_builder = Cors::default()
                 .allow_any_method()
                 .allow_any_header()
@@ -228,6 +241,8 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(app_state.clone())
+            // SECURITY: Set request payload size limit (10MB) to prevent DoS
+            .app_data(web::JsonConfig::default().limit(10_485_760))
             // Security middleware (order matters!)
             .wrap(cors)
             .wrap(SecurityHeaders)

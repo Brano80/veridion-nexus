@@ -71,9 +71,11 @@ where
                 HeaderValue::from_static("max-age=31536000; includeSubDomains"),
             );
 
+            // SECURITY: Strict CSP without unsafe-inline and unsafe-eval to prevent XSS
+            // Note: If you need inline scripts, use nonces or hashes instead
             res.headers_mut().insert(
                 HeaderName::from_static("content-security-policy"),
-                HeaderValue::from_static("default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'"),
+                HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'"),
             );
 
             res.headers_mut().insert(

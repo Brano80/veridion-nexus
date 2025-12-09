@@ -8,8 +8,8 @@ const API_BASE = "http://127.0.0.1:8080/api/v1";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [username, setUsername] = useState("testuser");
-  const [password, setPassword] = useState("test123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -91,12 +91,6 @@ export default function LoginPage() {
             {loading ? "Logging in..." : "Login"}
           </button>
         </form>
-
-        <div className="mt-6 text-sm text-slate-400">
-          <p>Default credentials:</p>
-          <p className="font-mono">Username: testuser</p>
-          <p className="font-mono">Password: test123</p>
-        </div>
       </div>
     </div>
   );

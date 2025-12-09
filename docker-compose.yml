@@ -5,15 +5,15 @@ services:
     image: postgres:16-alpine
     container_name: veridion-nexus-db
     environment:
-      POSTGRES_USER: veridion
-      POSTGRES_PASSWORD: veridion_password
-      POSTGRES_DB: veridion_nexus
+      POSTGRES_USER: ${POSTGRES_USER:-veridion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-veridion_nexus}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U veridion -d veridion_nexus"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-veridion} -d ${POSTGRES_DB:-veridion_nexus}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -27,9 +27,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - RUST_LOG=info
-      - DATABASE_URL=postgresql://veridion:veridion_password@postgres:5432/veridion_nexus
-      - VERIDION_MASTER_KEY=${VERIDION_MASTER_KEY:-default_master_key_change_in_production}
+      - RUST_LOG=${RUST_LOG:-info}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-veridion}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-veridion_nexus}
+      - VERIDION_MASTER_KEY=${VERIDION_MASTER_KEY}
+      - JWT_SECRET=${JWT_SECRET}
     depends_on:
       postgres:
         condition: service_healthy

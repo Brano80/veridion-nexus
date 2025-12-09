@@ -44,8 +44,14 @@ pub struct AuthService {
 
 impl AuthService {
     pub fn new() -> Result<Self, String> {
+        // SECURITY: JWT_SECRET must be set in production - no default fallback
         let secret = env::var("JWT_SECRET")
-            .unwrap_or_else(|_| "your-secret-key-change-in-production".to_string());
+            .map_err(|_| "JWT_SECRET environment variable must be set. This is a critical security requirement.".to_string())?;
+        
+        // Validate secret length (minimum 32 characters for security)
+        if secret.len() < 32 {
+            return Err("JWT_SECRET must be at least 32 characters long for security".to_string());
+        }
 
         let encoding_key = EncodingKey::from_secret(secret.as_ref());
         let decoding_key = DecodingKey::from_secret(secret.as_ref());
@@ -98,7 +104,9 @@ impl AuthService {
 
 impl Default for AuthService {
     fn default() -> Self {
-        Self::new().expect("Failed to initialize AuthService")
+        // SECURITY: Default implementation should not be used in production
+        // This is only for testing/development
+        Self::new().expect("JWT_SECRET must be set in environment")
     }
 }
 

@@ -207,11 +207,24 @@ WHERE r.name = 'viewer'
   )
 ON CONFLICT DO NOTHING;
 
--- Create default admin user (password: admin123 - CHANGE IN PRODUCTION!)
--- Password hash for 'admin123' using bcrypt with cost 12
-INSERT INTO users (username, email, password_hash, full_name) VALUES
-    ('admin', 'admin@veridion-nexus.local', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyY5Y5Y5Y5Y5', 'System Administrator')
-ON CONFLICT (username) DO NOTHING;
+-- ============================================================================
+-- ADMIN USER CREATION
+-- ============================================================================
+-- SECURITY NOTE: Default admin user creation is DISABLED for security.
+-- 
+-- To create an admin user in production:
+-- 1. Use the /api/v1/auth/register endpoint to create a user
+-- 2. Manually assign admin role via SQL:
+--    INSERT INTO user_roles (user_id, role_id)
+--    SELECT u.id, r.id FROM users u, roles r
+--    WHERE u.username = 'your_admin_username' AND r.name = 'admin';
+--
+-- DO NOT use default credentials in production!
+--
+-- The following INSERT is commented out for security:
+-- INSERT INTO users (username, email, password_hash, full_name) VALUES
+--     ('admin', 'admin@veridion-nexus.local', '$2b$12$...', 'System Administrator')
+-- ON CONFLICT (username) DO NOTHING;
 
 -- Assign admin role to default admin user
 INSERT INTO user_roles (user_id, role_id)
