@@ -57,13 +57,13 @@ impl ProxyService {
                         Some(Arc::new(reader))
                     }
                     Err(e) => {
-                        log::warn!("Failed to load GeoIP database from {}: {}. Continuing with hostname pattern matching only.", path, e);
+                        eprintln!("WARNING: Failed to load GeoIP database from {}: {}. GeoIP is disabled. Only hardcoded hostname pattern checks will work.", path, e);
                         None
                     }
                 }
             }
             Err(_) => {
-                log::info!("GEOIP_DB_PATH not set. GeoIP lookups disabled. Using hostname pattern matching only.");
+                eprintln!("WARNING: GEOIP_DB_PATH not set. GeoIP is disabled. Only hardcoded hostname pattern checks will work.");
                 None
             }
         };
