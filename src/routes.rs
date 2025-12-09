@@ -6052,23 +6052,30 @@ pub async fn proxy_request(
                     .map(|c| c.sub);
 
                 // Log compliance action
-                let _ = sqlx::query(
+                let record_id = uuid::Uuid::new_v4();
+                let seal_id = uuid::Uuid::new_v4().to_string();
+                let tx_id = uuid::Uuid::new_v4().to_string();
+                let action_summary = format!("PROXY_BLOCKED: Attempted connection to {} ({})", proxy_req.target_url, country);
+                if let Err(e) = sqlx::query(
                     "INSERT INTO compliance_records (
-                        seal_id, tx_id, agent_id, action_summary, status, 
-                        risk_level, user_id, timestamp, target_region
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                        id, seal_id, tx_id, agent_id, action_summary, status, 
+                        risk_level, user_id, timestamp, payload_hash
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
                 )
-                .bind(&uuid::Uuid::new_v4().to_string())
-                .bind(&uuid::Uuid::new_v4().to_string())
+                .bind(record_id)
+                .bind(&seal_id)
+                .bind(&tx_id)
                 .bind(&agent_id)
-                .bind(&format!("PROXY_BLOCKED: Attempted connection to {} ({})", proxy_req.target_url, country))
+                .bind(&action_summary)
                 .bind("BLOCKED (SOVEREIGNTY)")
                 .bind("HIGH")
                 .bind(user_id.as_deref())
                 .bind(chrono::Utc::now())
-                .bind(&country)
+                .bind(&format!("region:{}", country))
                 .execute(&data.db_pool)
-                .await;
+                .await {
+                    log::error!("Failed to log proxy block: {}", e);
+                }
 
                 return HttpResponse::Forbidden().json(serde_json::json!({
                     "error": "SOVEREIGN_LOCK_VIOLATION",
@@ -6117,22 +6124,29 @@ pub async fn proxy_request(
                 .to_string();
             
             tokio::spawn(async move {
-                let _ = sqlx::query(
+                let record_id = uuid::Uuid::new_v4();
+                let seal_id = uuid::Uuid::new_v4().to_string();
+                let tx_id = uuid::Uuid::new_v4().to_string();
+                let action_summary = format!("PROXY_ALLOWED: {}", target_url);
+                if let Err(e) = sqlx::query(
                     "INSERT INTO compliance_records (
-                        seal_id, tx_id, agent_id, action_summary, status, 
-                        risk_level, timestamp, target_region
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+                        id, seal_id, tx_id, agent_id, action_summary, status, 
+                        risk_level, timestamp, payload_hash
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
                 )
-                .bind(&uuid::Uuid::new_v4().to_string())
-                .bind(&uuid::Uuid::new_v4().to_string())
+                .bind(record_id)
+                .bind(&seal_id)
+                .bind(&tx_id)
                 .bind(&agent_id)
-                .bind(&format!("PROXY_ALLOWED: {}", target_url))
+                .bind(&action_summary)
                 .bind("COMPLIANT")
                 .bind("LOW")
                 .bind(chrono::Utc::now())
-                .bind("EU")
+                .bind("region:EU")
                 .execute(&db_pool)
-                .await;
+                .await {
+                    log::error!("Failed to log proxy success: {}", e);
+                }
             });
 
             // Build response with original headers and body
