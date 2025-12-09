@@ -20,21 +20,19 @@ Veridion Nexus = 3-line integration → 2 weeks → **Violations technically imp
 
 ---
 
-## 💰 Pricing - Early Adopter Program (First 10 Customers)
+## 💰 Early Adopter Pricing (First 10 Customers - 50% Off)
 
-| Tier | AI Systems | Annual Price | Best For |
-|------|-----------|--------------|----------|
+| Tier | AI Systems | Annual | Best For |
+|------|-----------|--------|----------|
 | **Starter** | 1-3 | **€18,000** | Series A fintechs |
 | **Professional** | 4-10 | **€35,000** | Series B scale-ups |
 | **Enterprise** | 11+ | **Custom** | Banks, insurers |
 
-**Includes**: All compliance modules • 6 AI platform SDKs • Slack support • Quarterly reviews
+**Includes**: All modules • 6 AI SDKs • Priority support • Quarterly reviews
 
-📧 **Sales**: sales@veridion.nexus  
+📧 **Contact**: [Open GitHub Issue](https://github.com/Brano80/veridion-nexus/issues/new) or email (see profile)
 
-📅 **Demo**: [Book 30-min call](https://calendly.com/veridion-nexus)
-
-> *After first 10 customers: Starter €45K, Professional €80K*
+> *Normal pricing after first 10: Starter €45K, Professional €80K*
 
 ---
 
@@ -528,9 +526,10 @@ See `sdks/README.md` for complete documentation and examples.
 
 ## 📄 License
 
-**AGPL-3.0** - See [LICENSE](LICENSE) file
+**AGPL-3.0** - See [LICENSE](LICENSE)
 
-This ensures if anyone uses Veridion Nexus as a SaaS, they must open-source modifications. For commercial licensing without this requirement: sales@veridion.nexus
+Open-source with copyleft. If you modify and deploy as SaaS, you must open-source changes.  
+For commercial licensing: Open an [issue](https://github.com/Brano80/veridion-nexus/issues).
 
 ---
 
@@ -538,22 +537,22 @@ This ensures if anyone uses Veridion Nexus as a SaaS, they must open-source modi
 
 ### For Developers
 
-- [📖 Documentation](ARCHITECTURE.md)
+- 📖 [Architecture Docs](ARCHITECTURE.md)
 
-- [🐳 Docker Deployment](DEPLOYMENT_GUIDE.md)  
+- 🐳 [Deployment Guide](DEPLOYMENT_GUIDE.md)  
 
-- [💻 Quick Start](#-quick-start)
+- 💻 [Quick Start](#-quick-start) (scroll up)
 
 ### For Companies
 
-- 📧 **Contact**: sales@veridion.nexus
+- 📧 **Contact**: [Create Issue](https://github.com/Brano80/veridion-nexus/issues/new?title=Partnership%20Inquiry)
 
-- 📅 **Book Demo**: [30-minute walkthrough](https://calendly.com/veridion-nexus)
+- 💼 **Early Adopter Program**: First 10 customers get 50% off
 
-- 💬 **Questions?**: Open an [issue](https://github.com/Brano80/veridion-nexus/issues)
+- 🤝 **Design Partners**: Looking for 2-3 beta customers (free pilot)
 
 ---
 
-**Built with ❤️ for EU AI Act Compliance**  
+**Built for EU AI Act Compliance**  
 
 *Preparing companies for December 2027 deadline*
