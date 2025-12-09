@@ -31,6 +31,9 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-veridion}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-veridion_nexus}
       - VERIDION_MASTER_KEY=${VERIDION_MASTER_KEY}
       - JWT_SECRET=${JWT_SECRET}
+      - GEOIP_DB_PATH=/app/GeoLite2-Country.mmdb
+    volumes:
+      - ./GeoLite2-Country.mmdb:/app/GeoLite2-Country.mmdb:ro
     depends_on:
       postgres:
         condition: service_healthy

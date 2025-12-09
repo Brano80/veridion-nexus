@@ -110,3 +110,6 @@ server_report.pdf
 # Local configuration
 local_config.*
 local.*
+
+# GeoIP database files
+*.mmdb
