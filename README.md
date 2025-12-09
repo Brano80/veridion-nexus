@@ -103,38 +103,30 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
 
 ### Local Development
 
-1. **Clone and build:**
+1. **Setup environment:**
    ```bash
-   git clone <repository-url>
-   cd veridion-nexus
-   cargo build
+   # Auto-generate .env with secure random values
+   ./setup_env.sh
+   
+   # Or manually:
+   # cp .env.example .env
+   # nano .env  # Edit values
    ```
 
-2. **Set environment variables (optional):**
+2. **Start the system:**
    ```bash
-   export VERIDION_MASTER_KEY=your_master_key_here
-   export USE_REAL_API=false  # Set to true for live eIDAS sealing
-   export SIGNICAT_CLIENT_ID=your_client_id
-   export SIGNICAT_CLIENT_SECRET=your_client_secret
+   docker-compose up --build
    ```
 
-3. **Run the server:**
+3. **Test it works:**
    ```bash
-   cargo run
+   ./test_system.sh
    ```
 
 4. **Access the API:**
-   - **Health Check:** http://localhost:8080/health
-   - **Swagger UI:** http://localhost:8080/swagger-ui/
-   - **API Base:** http://localhost:8080/api/v1
-
-### Docker Deployment
-
-```bash
-docker-compose up --build
-```
-
-The API will be available at `http://localhost:8080`
+   - Health: http://localhost:8080/health
+   - Swagger: http://localhost:8080/swagger-ui/
+   - Dashboard: http://localhost:3000 (run `cd dashboard && npm install && npm run dev`)
 
 ## 📚 API Documentation
 
