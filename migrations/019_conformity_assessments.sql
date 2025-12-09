@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS conformity_assessments (
 CREATE INDEX IF NOT EXISTS idx_conformity_assessments_system_id ON conformity_assessments(system_id);
 CREATE INDEX IF NOT EXISTS idx_conformity_assessments_status ON conformity_assessments(status);
 CREATE INDEX IF NOT EXISTS idx_conformity_assessments_expiration ON conformity_assessments(expiration_date) WHERE expiration_date IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_conformity_assessments_expiring_soon ON conformity_assessments(expiration_date) 
-    WHERE expiration_date IS NOT NULL AND expiration_date > CURRENT_TIMESTAMP AND expiration_date < CURRENT_TIMESTAMP + INTERVAL '30 days';
+-- Note: Cannot use CURRENT_TIMESTAMP in index predicate (must be IMMUTABLE)
+-- Use idx_conformity_assessments_expiration and filter in queries: WHERE expiration_date > CURRENT_TIMESTAMP AND expiration_date < CURRENT_TIMESTAMP + INTERVAL '30 days'
 
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_conformity_assessments_updated_at()

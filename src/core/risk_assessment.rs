@@ -142,7 +142,7 @@ impl RiskAssessmentService {
         let overall_score = risk_factors.iter()
             .map(|rf| rf.weight * rf.score)
             .sum::<f64>()
-            / risk_factors.iter().map(|rf| rf.weight).sum::<f64>().max(0.01);
+            / (risk_factors.iter().map(|rf| rf.weight).sum::<f64>().max(0.01_f64));
 
         // Determine risk level
         let risk_level = if overall_score >= 0.8 {
@@ -200,7 +200,7 @@ impl RiskAssessmentService {
             ("legal", 0.8),
         ];
 
-        let mut max_score = 0.0;
+        let mut max_score: f64 = 0.0;
         let mut matched_keywords = Vec::new();
 
         for (keyword, weight) in high_risk_patterns {
@@ -254,7 +254,7 @@ impl RiskAssessmentService {
             ("genetic", 0.9),
         ];
 
-        let mut max_score = 0.0;
+        let mut max_score: f64 = 0.0;
         let mut matched = Vec::new();
 
         for (pattern, weight) in sensitive_patterns {

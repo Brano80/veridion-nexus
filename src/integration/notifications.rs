@@ -70,31 +70,6 @@ pub struct NotificationRequest {
     pub related_entity_id: Option<String>, // breach_id, seal_id, etc.
 }
 
-// Implement Clone for NotificationChannel and NotificationType
-impl Clone for NotificationChannel {
-    fn clone(&self) -> Self {
-        match self {
-            NotificationChannel::Email => NotificationChannel::Email,
-            NotificationChannel::Sms => NotificationChannel::Sms,
-            NotificationChannel::InApp => NotificationChannel::InApp,
-        }
-    }
-}
-
-impl Clone for NotificationType {
-    fn clone(&self) -> Self {
-        match self {
-            NotificationType::DataBreach => NotificationType::DataBreach,
-            NotificationType::HighRiskAiAction => NotificationType::HighRiskAiAction,
-            NotificationType::AutomatedDecision => NotificationType::AutomatedDecision,
-            NotificationType::RestrictionApplied => NotificationType::RestrictionApplied,
-            NotificationType::ObjectionReceived => NotificationType::ObjectionReceived,
-            NotificationType::RectificationDone => NotificationType::RectificationDone,
-            NotificationType::ErasureDone => NotificationType::ErasureDone,
-        }
-    }
-}
-
 /// Notification service configuration
 pub struct NotificationService {
     client: Client,

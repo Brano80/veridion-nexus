@@ -1,3 +1,4 @@
+use sqlx::Row;
 use actix_web::{web, HttpResponse, Responder, HttpRequest};
 use serde::{Deserialize, Serialize};
 use crate::api_state::AppState;
@@ -770,10 +771,10 @@ pub async fn get_logs(
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(1)
         .max(1);
-    let limit = query
+    let limit = (query
         .get("limit")
         .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(100)
+        .unwrap_or(100))
         .min(1000)
         .max(1);
     let offset = (page - 1) * limit;
@@ -1126,9 +1127,11 @@ pub async fn download_report(
                 }
                 Err(e) => {
                     let request_id = generate_request_id();
-                    log_error_safely("generating report", &e, &request_id);
+                    // e is a String, convert to &dyn Error
+                    let error_msg = format!("{}", e);
+                    log::error!("Error generating report: {} (Request ID: {})", error_msg, request_id);
                     HttpResponse::InternalServerError().json(serde_json::json!({
-                        "error": format!("Failed to generate report: {}", e)
+                        "error": "Failed to generate report"
                     }))
                 }
             }
@@ -1147,7 +1150,6 @@ pub async fn revoke_access(data: web::Data<AppState>) -> impl Responder {
     match data.set_locked_down(true).await {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "SUCCESS"})),
         Err(e) => {
-            let request_id = generate_request_id();
             let request_id = generate_request_id();
             log_error_safely("setting lockdown", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
@@ -2490,10 +2492,10 @@ pub async fn get_all_risks(
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(1)
         .max(1);
-    let limit = query
+    let limit = (query
         .get("limit")
         .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(100)
+        .unwrap_or(100))
         .min(1000)
         .max(1);
     let offset = (page - 1) * limit;
@@ -2704,10 +2706,10 @@ pub async fn get_breaches(
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(1)
         .max(1);
-    let limit = query
+    let limit = (query
         .get("limit")
         .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(100)
+        .unwrap_or(100))
         .min(1000)
         .max(1);
     let offset = (page - 1) * limit;
@@ -3233,10 +3235,10 @@ pub async fn get_all_dpias(
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(1)
         .max(1);
-    let limit = query
+    let limit = (query
         .get("limit")
         .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(100)
+        .unwrap_or(100))
         .min(1000)
         .max(1);
     let offset = (page - 1) * limit;
@@ -4141,10 +4143,10 @@ pub async fn get_all_monitoring_events(
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(1)
         .max(1);
-    let limit = query
+    let limit = (query
         .get("limit")
         .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(100)
+        .unwrap_or(100))
         .min(1000)
         .max(1);
     let offset = (page - 1) * limit;
@@ -4515,7 +4517,8 @@ async fn trigger_webhook_event(
         Ok(wh) => wh,
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching webhooks: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching webhooks", &e, &request_id);
             return;
         }
     };
@@ -4656,7 +4659,6 @@ pub async fn register_webhook(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            let request_id = generate_request_id();
             log_error_safely("registering webhook", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to register webhook"
@@ -4690,10 +4692,10 @@ pub async fn list_webhooks(
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(1)
         .max(1);
-    let limit = query
+    let limit = (query
         .get("limit")
         .and_then(|s| s.parse::<i64>().ok())
-        .unwrap_or(100)
+        .unwrap_or(100))
         .min(1000)
         .max(1);
     let offset = (page - 1) * limit;
@@ -4732,7 +4734,7 @@ pub async fn list_webhooks(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching webhooks: {}", e);
+            log_error_safely("fetching webhooks", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch webhooks"
             }))
@@ -5005,8 +5007,8 @@ pub async fn set_notification_preferences(
 
     match result {
         Ok(row) => {
-            let created_at: chrono::DateTime<chrono::Utc> = row.get(0);
-            let updated_at: chrono::DateTime<chrono::Utc> = row.get(1);
+            let created_at: chrono::DateTime<chrono::Utc> = row.try_get("created_at").unwrap_or_else(|_| chrono::Utc::now());
+            let updated_at: chrono::DateTime<chrono::Utc> = row.try_get("updated_at").unwrap_or_else(|_| chrono::Utc::now());
             HttpResponse::Ok().json(NotificationPreferenceResponse {
                 notification_type: pref.notification_type,
                 preferred_channels: pref.preferred_channels,
@@ -5017,7 +5019,6 @@ pub async fn set_notification_preferences(
             })
         }
         Err(e) => {
-            let request_id = generate_request_id();
             let request_id = generate_request_id();
             log_error_safely("setting notification preferences", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
