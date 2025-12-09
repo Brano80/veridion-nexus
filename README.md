@@ -1,9 +1,42 @@
 # VERIDION NEXUS
-## Sovereign Trust Layer for High-Risk AI Agents
 
-> **"Compliance as a Runtime Constraint."**
+**Runtime Compliance for EU AI Act** • December 2027 Deadline
 
-Veridion Nexus is a Rust-based middleware platform designed for High-Risk AI Agents in the EU. It enforces Data Sovereignty, GDPR Erasure, and eIDAS Trust at the network level, ensuring AI agents cannot physically violate the EU AI Act, GDPR, and eIDAS regulations.
+Make EU AI Act violations technically impossible, not just policy violations.
+
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
+
+[![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org)
+
+---
+
+## ⚡ The Problem
+
+Traditional compliance = policies + audits → 6-12 months → €260K → **Violations still possible**
+
+Veridion Nexus = 3-line integration → 2 weeks → **Violations technically impossible**
+
+**Target**: Fintech & insurtech companies preparing for December 2027 EU AI Act deadline
+
+---
+
+## 💰 Pricing - Early Adopter Program (First 10 Customers)
+
+| Tier | AI Systems | Annual Price | Best For |
+|------|-----------|--------------|----------|
+| **Starter** | 1-3 | **€18,000** | Series A fintechs |
+| **Professional** | 4-10 | **€35,000** | Series B scale-ups |
+| **Enterprise** | 11+ | **Custom** | Banks, insurers |
+
+**Includes**: All compliance modules • 6 AI platform SDKs • Slack support • Quarterly reviews
+
+📧 **Sales**: sales@veridion.nexus  
+
+📅 **Demo**: [Book 30-min call](https://calendly.com/veridion-nexus)
+
+> *After first 10 customers: Starter €45K, Professional €80K*
+
+---
 
 ## 🎯 Core Value Proposition
 
@@ -495,16 +528,32 @@ See `sdks/README.md` for complete documentation and examples.
 
 ## 📄 License
 
-[Add your license here]
+**AGPL-3.0** - See [LICENSE](LICENSE) file
 
-## 🤝 Contributing
-
-[Add contribution guidelines]
-
-## 📞 Support
-
-[Add support contact information]
+This ensures if anyone uses Veridion Nexus as a SaaS, they must open-source modifications. For commercial licensing without this requirement: sales@veridion.nexus
 
 ---
 
-**Built with ❤️ for EU Compliance**
+## 🚀 Get Started
+
+### For Developers
+
+- [📖 Documentation](ARCHITECTURE.md)
+
+- [🐳 Docker Deployment](DEPLOYMENT_GUIDE.md)  
+
+- [💻 Quick Start](#-quick-start)
+
+### For Companies
+
+- 📧 **Contact**: sales@veridion.nexus
+
+- 📅 **Book Demo**: [30-minute walkthrough](https://calendly.com/veridion-nexus)
+
+- 💬 **Questions?**: Open an [issue](https://github.com/Brano80/veridion-nexus/issues)
+
+---
+
+**Built with ❤️ for EU AI Act Compliance**  
+
+*Preparing companies for December 2027 deadline*
