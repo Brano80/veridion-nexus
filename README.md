@@ -1,6 +1,6 @@
 # VERIDION NEXUS
 
-**Runtime Compliance for EU AI Act** • December 2027 Deadline
+**Runtime AI Governance for DORA & EU AI Act. Enforce compliance physically, not just legally.**
 
 Make EU AI Act violations technically impossible, not just policy violations.
 
