@@ -145,6 +145,9 @@ export default function CompliancePage() {
                   <th className="px-6 py-4 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">
                     Risk Level
                   </th>
+                  <th className="px-6 py-4 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                    Region
+                  </th>
                   <th className="px-6 py-4 text-right text-xs font-semibold text-slate-400 uppercase tracking-wider">
                     Actions
                   </th>
@@ -200,6 +203,11 @@ export default function CompliancePage() {
                         }`}
                       >
                         {record.risk_level || "N/A"}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-xs text-slate-400 font-mono">
+                        {record.target_region || "Unknown"}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">

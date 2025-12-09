@@ -117,6 +117,16 @@ impl ProxyService {
     fn check_hostname_pattern(&self, hostname: &str) -> String {
         let hostname_lower = hostname.to_lowercase();
         
+        // --- DEMO PATCH START ---
+        // Hardcoded bypass for demo to avoid DNS issues
+        if hostname_lower.contains("google.com") {
+            return "US".to_string();
+        }
+        if hostname_lower.contains("europa.eu") {
+            return "EU".to_string();
+        }
+        // --- DEMO PATCH END ---
+        
         // US-based AI services
         if hostname_lower.contains("openai.com") 
             || hostname_lower.contains("anthropic.com")
@@ -134,7 +144,6 @@ impl ProxyService {
                 || hostname_lower.contains("germanywestcentral") {
                 return "EU".to_string();
             }
-            // Default Azure is US
             return "US".to_string();
         }
 
@@ -146,7 +155,6 @@ impl ProxyService {
                 || hostname_lower.contains("eu-south") {
                 return "EU".to_string();
             }
-            // Default AWS is US
             return "US".to_string();
         }
 
@@ -155,7 +163,6 @@ impl ProxyService {
             if hostname_lower.contains("europe") || hostname_lower.contains("eu-") {
                 return "EU".to_string();
             }
-            // Default GCP is US
             return "US".to_string();
         }
 

@@ -324,6 +324,13 @@ pub struct WebhookDeliveryDb {
 /// Helper to convert ComplianceRecordDb to ComplianceRecord (for Annex IV)
 impl From<ComplianceRecordDb> for crate::core::annex_iv::ComplianceRecord {
     fn from(db: ComplianceRecordDb) -> Self {
+        // Extract region from payload_hash if it follows "region:XX" format
+        let target_region = if db.payload_hash.starts_with("region:") {
+            Some(db.payload_hash.strip_prefix("region:").unwrap_or("").to_string())
+        } else {
+            None
+        };
+        
         Self {
             timestamp: db.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
             action_summary: db.action_summary,
@@ -341,6 +348,7 @@ impl From<ComplianceRecordDb> for crate::core::annex_iv::ComplianceRecord {
             post_market_monitoring: None,
             human_oversight_procedures: None,
             risk_management_measures: None,
+            target_region,
         }
     }
 }

@@ -149,6 +149,7 @@ export default function Home() {
                       </div>
                       <div className="text-xs text-slate-500">
                         {log.timestamp || log.created_at || "No timestamp"}
+                        {log.target_region && ` • Region: ${log.target_region}`}
                       </div>
                     </div>
                   </div>

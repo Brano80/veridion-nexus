@@ -54,6 +54,9 @@ pub struct ComplianceRecord {
     /// Risk management measures implemented
     #[schema(example = r#"["Encryption", "Access controls", "Audit logging"]"#)]
     pub risk_management_measures: Option<Vec<String>>,
+    /// Detected region/country code for proxy requests (e.g., "US", "DE", "EU")
+    #[schema(example = "US")]
+    pub target_region: Option<String>,
 }
 
 /// Generate an Annex IV compliance report PDF

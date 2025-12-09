@@ -6037,7 +6037,7 @@ pub async fn proxy_request(
     let proxy_service = ProxyService::new();
 
     // 1. Check data sovereignty BEFORE forwarding
-    match proxy_service.check_sovereignty(&proxy_req.target_url).await {
+    let detected_country = match proxy_service.check_sovereignty(&proxy_req.target_url).await {
         Ok((is_eu, country)) => {
             if !is_eu {
                 // Log the violation attempt
@@ -6085,17 +6085,59 @@ pub async fn proxy_request(
                     "status": "BLOCKED"
                 }));
             }
+            // Store the detected country for logging allowed requests
+            Some(country)
         }
         Err(e) => {
             // If we can't determine sovereignty, be conservative and block
             log::warn!("Could not determine sovereignty for {}: {}", proxy_req.target_url, e);
+            
+            // Log the failed check attempt
+            let agent_id = req.headers()
+                .get("X-Agent-ID")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+            
+            let user_id = extract_claims(&req, &crate::security::AuthService::new().unwrap())
+                .ok()
+                .map(|c| c.sub);
+            
+            // Log compliance action
+            let record_id = uuid::Uuid::new_v4();
+            let seal_id = uuid::Uuid::new_v4().to_string();
+            let tx_id = uuid::Uuid::new_v4().to_string();
+            let action_summary = format!("PROXY_BLOCKED: Could not determine sovereignty for {}", proxy_req.target_url);
+            if let Err(e) = sqlx::query(
+                "INSERT INTO compliance_records (
+                    id, seal_id, tx_id, agent_id, action_summary, status, 
+                    risk_level, user_id, timestamp, payload_hash
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+            )
+            .bind(record_id)
+            .bind(&seal_id)
+            .bind(&tx_id)
+            .bind(&agent_id)
+            .bind(&action_summary)
+            .bind("BLOCKED (SOVEREIGNTY)")
+            .bind("HIGH")
+            .bind(user_id.as_deref())
+            .bind(chrono::Utc::now())
+            .bind("region:UNKNOWN")
+            .execute(&data.db_pool)
+            .await {
+                log::error!("Failed to log proxy block: {}", e);
+            }
+            
             return HttpResponse::Forbidden().json(serde_json::json!({
                 "error": "SOVEREIGNTY_CHECK_FAILED",
                 "message": "Could not verify data sovereignty. Request blocked for safety.",
-                "target_url": proxy_req.target_url
+                "target_url": proxy_req.target_url,
+                "detected_country": "UNKNOWN",
+                "status": "BLOCKED"
             }));
         }
-    }
+    };
 
     // 2. Forward request to target
     match proxy_service.forward_request(&proxy_req).await {
@@ -6117,6 +6159,7 @@ pub async fn proxy_request(
             // 3. Log successful proxy action (async, non-blocking)
             let db_pool = data.db_pool.clone();
             let target_url = proxy_req.target_url.clone();
+            let country_for_log = detected_country.unwrap_or_else(|| "UNKNOWN".to_string());
             let agent_id = req.headers()
                 .get("X-Agent-ID")
                 .and_then(|h| h.to_str().ok())
@@ -6127,7 +6170,7 @@ pub async fn proxy_request(
                 let record_id = uuid::Uuid::new_v4();
                 let seal_id = uuid::Uuid::new_v4().to_string();
                 let tx_id = uuid::Uuid::new_v4().to_string();
-                let action_summary = format!("PROXY_ALLOWED: {}", target_url);
+                let action_summary = format!("PROXY_ALLOWED: {} ({})", target_url, country_for_log);
                 if let Err(e) = sqlx::query(
                     "INSERT INTO compliance_records (
                         id, seal_id, tx_id, agent_id, action_summary, status, 
@@ -6142,7 +6185,7 @@ pub async fn proxy_request(
                 .bind("COMPLIANT")
                 .bind("LOW")
                 .bind(chrono::Utc::now())
-                .bind("region:EU")
+                .bind(&format!("region:{}", country_for_log))
                 .execute(&db_pool)
                 .await {
                     log::error!("Failed to log proxy success: {}", e);

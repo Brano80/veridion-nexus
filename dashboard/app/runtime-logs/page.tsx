@@ -143,6 +143,9 @@ export default function RuntimeLogsPage() {
                   <th className="px-6 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">
                     Risk Level
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                    Region
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -187,6 +190,9 @@ export default function RuntimeLogsPage() {
                           {log.risk_level}
                         </span>
                       )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-400 font-mono">
+                      {log.target_region || "Unknown"}
                     </td>
                   </tr>
                 ))}

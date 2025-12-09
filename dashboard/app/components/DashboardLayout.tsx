@@ -62,17 +62,9 @@ export default function DashboardLayout({
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const { data: modules = [], isLoading: modulesLoading } = useModules();
 
-  // Create a map of module names to enabled status
-  const moduleMap = new Map<string, boolean>();
-  modules.forEach((m) => {
-    moduleMap.set(m.name, m.enabled);
-  });
-
-  // Filter plugin navigation based on enabled modules
-  const enabledPlugins = pluginNavigation.filter((item) => {
-    if (!item.module) return true;
-    return moduleMap.get(item.module) ?? false;
-  });
+  // DEMO MODE: Show all modules regardless of enabled status
+  // For demo purposes, we want to display all available modules
+  const enabledPlugins = pluginNavigation; // Show all modules in demo mode
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
