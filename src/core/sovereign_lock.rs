@@ -1,6 +1,7 @@
 /// EU/EEA country ISO codes whitelist
 #[allow(dead_code)]
 pub const EU_EEA_WHITELIST: &[&str] = &[
+    "EU", // European Union (generic code for EU institutions and .eu domains)
     "AT", // Austria
     "BE", // Belgium
     "BG", // Bulgaria
