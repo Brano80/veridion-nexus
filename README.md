@@ -10,7 +10,7 @@ Make EU AI Act violations technically impossible, not just policy violations.
 
 ---
 
-## ⚡ The Problem
+## The Problem
 
 Traditional compliance = policies + audits → 6-12 months → €260K → **Violations still possible**
 
@@ -20,27 +20,11 @@ Veridion Nexus = 3-line integration → 2 weeks → **Violations technically imp
 
 ---
 
-## 💰 Early Adopter Pricing (First 10 Customers - 50% Off)
-
-| Tier | AI Systems | Annual | Best For |
-|------|-----------|--------|----------|
-| **Starter** | 1-3 | **€18,000** | Series A fintechs |
-| **Professional** | 4-10 | **€35,000** | Series B scale-ups |
-| **Enterprise** | 11+ | **Custom** | Banks, insurers |
-
-**Includes**: All modules • 6 AI SDKs • Priority support • Quarterly reviews
-
-📧 **Contact**: [Open GitHub Issue](https://github.com/Brano80/veridion-nexus/issues/new) or email (see profile)
-
-> *Normal pricing after first 10: Starter €45K, Professional €80K*
-
----
-
-## 🎯 Core Value Proposition
+## Core Value Proposition
 
 **Runtime Enforcement of Compliance** - Instead of relying on policies and audits, Veridion Nexus provides **technical guarantees** that make it physically impossible for AI agents to violate EU regulations.
 
-## 🏗️ Architecture
+## Architecture
 
 Veridion Nexus is organized into **three distinct layers** for maximum flexibility and adoption:
 
@@ -93,12 +77,14 @@ Veridion Nexus is organized into **three distinct layers** for maximum flexibili
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
 
-## 🚀 Quick Start
+## Quick Start
+
+**Free Community Edition** - Run Veridion Nexus locally with Docker. No license required for development, testing, or internal use.
 
 ### Prerequisites
 
-- **Rust 1.70+** ([Install Rust](https://rustup.rs/))
-- **Docker** (Optional, for containerized deployment)
+- **Docker** (Recommended - easiest way to get started)
+- **Rust 1.70+** (Optional - only needed if building from source)
 - **Signicat API Credentials** (Optional - system works in mock mode by default)
 
 ### Local Development
@@ -128,7 +114,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
    - Swagger: http://localhost:8080/swagger-ui/
    - Dashboard: http://localhost:3000 (run `cd dashboard && npm install && npm run dev`)
 
-## 📚 API Documentation
+**That's it!** You now have a fully functional compliance platform running locally. All core features are available in the Community Edition.
+
+## API Documentation
 
 ### Core Endpoints
 
@@ -193,38 +181,38 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
 
 **Swagger UI** is available at: `http://localhost:8080/swagger-ui/`
 
-## 🔒 Compliance Features
+## Compliance Features
 
 ### GDPR Compliance
-- ✅ **Article 15** - Right of access
-- ✅ **Article 16** - Right to rectification
-- ✅ **Article 17** - Right to erasure ("Right to be Forgotten")
-- ✅ **Article 18** - Right to restriction of processing
-- ✅ **Article 19** - Notification of rectification/erasure
-- ✅ **Article 20** - Right to data portability
-- ✅ **Article 21** - Right to object
-- ✅ **Article 22** - Automated decision-making (human review)
-- ✅ **Article 25** - Data protection by design
-- ✅ **Article 30** - Records of processing activities
-- ✅ **Article 32** - Security of processing
-- ✅ **Article 33-34** - Data breach notification
+- **Article 15** - Right of access
+- **Article 16** - Right to rectification
+- **Article 17** - Right to erasure ("Right to be Forgotten")
+- **Article 18** - Right to restriction of processing
+- **Article 19** - Notification of rectification/erasure
+- **Article 20** - Right to data portability
+- **Article 21** - Right to object
+- **Article 22** - Automated decision-making (human review)
+- **Article 25** - Data protection by design
+- **Article 30** - Records of processing activities
+- **Article 32** - Security of processing
+- **Article 33-34** - Data breach notification
 
 ### EU AI Act Compliance
-- ✅ **Article 8** - Conformity assessment
-- ✅ **Article 9** - Risk management system (Enhanced with ML-based scoring)
-- ✅ **Article 10** - Data governance (Sovereign Lock)
-- ✅ **Article 11** - Data governance (Quality metrics, bias detection, lineage)
-- ✅ **Article 13** - Transparency requirements (Notification service)
-- ✅ **Article 14** - Human oversight
-- ✅ **Article 40** - Energy efficiency reporting (Green AI Telemetry)
-- ✅ **Article 72** - Post-market monitoring
-- ✅ **Annex IV** - Technical documentation (Automated PDF/JSON/XML generation)
+- **Article 8** - Conformity assessment
+- **Article 9** - Risk management system (Enhanced with ML-based scoring)
+- **Article 10** - Data governance (Sovereign Lock)
+- **Article 11** - Data governance (Quality metrics, bias detection, lineage)
+- **Article 13** - Transparency requirements (Notification service)
+- **Article 14** - Human oversight
+- **Article 40** - Energy efficiency reporting (Green AI Telemetry)
+- **Article 72** - Post-market monitoring
+- **Annex IV** - Technical documentation (Automated PDF/JSON/XML generation)
 
 ### eIDAS Compliance
-- ✅ **Article 36** - Qualified Electronic Seals
-- ✅ **Article 37** - Requirements for Qualified Electronic Seals
+- **Article 36** - Qualified Electronic Seals
+- **Article 37** - Requirements for Qualified Electronic Seals
 
-## 🧪 Testing
+## Testing
 
 ### Run Unit Tests
 ```bash
@@ -241,7 +229,7 @@ cargo test --test integration_test
 python test_agent.py
 ```
 
-## 📖 Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -270,7 +258,7 @@ TWILIO_FROM_NUMBER=+1234567890       # Twilio phone number
 RUST_LOG=info                         # Log level: trace, debug, info, warn, error
 ```
 
-## 🔧 Project Structure
+## Project Structure
 
 ```
 veridion-nexus/
@@ -299,9 +287,9 @@ veridion-nexus/
 └── README.md                    # This file
 ```
 
-## 🚦 Status
+## Status
 
-### ✅ Implemented (MVP Ready)
+### Implemented (MVP Ready)
 - Core compliance modules (Sovereign Lock, Crypto-Shredder, Privacy Bridge, Annex IV)
 - Priority 1: Data Subject Rights (GDPR Articles 15, 16, 17, 20)
 - Priority 1: Human Oversight (EU AI Act Article 14)
@@ -312,7 +300,7 @@ veridion-nexus/
 - Docker deployment with PostgreSQL
 - Integration tests with database support
 
-### ✅ Implemented (Priority 2)
+### Implemented (Priority 2)
 - **Consent Management (GDPR Articles 6, 7)** - Grant, withdraw, and track user consents
   - Endpoints: `POST /api/v1/consent`, `POST /api/v1/consent/withdraw`, `GET /api/v1/consent/{user_id}`
   - Automatic consent checking in `log_action`
@@ -322,21 +310,21 @@ veridion-nexus/
   - Automatic consultation requirement detection for high-risk processing
   - DPIA history and approval workflow
 
-### ✅ Implemented (Priority 2 - Continued)
+### Implemented (Priority 2 - Continued)
 - **Retention Period Automation (GDPR Article 5(1)(e))** - Automatic data deletion after retention periods
   - Endpoints: `POST /api/v1/retention/policy`, `POST /api/v1/retention/assign`, `GET /api/v1/retention/status/{record_type}/{record_id}`, `GET /api/v1/retention/policies`, `POST /api/v1/retention/execute_deletions`
   - Automatic deletion scheduling and execution
   - Crypto-shredding integration for compliance records
   - Retention exemptions support
 
-### ✅ Implemented (Priority 2 - Completed)
+### Implemented (Priority 2 - Completed)
 - **Post-Market Monitoring (EU AI Act Article 72)** - Monitor AI systems after market release
   - Endpoints: `POST /api/v1/monitoring/event`, `PUT /api/v1/monitoring/event/{event_id}`, `GET /api/v1/monitoring/events`, `GET /api/v1/monitoring/health/{system_id}`
   - Automatic system health status tracking
   - Incident tracking and resolution management
   - Performance and compliance metrics monitoring
 
-### ✅ Implemented (Priority 3 - Complete GDPR & EU AI Act Compliance)
+### Implemented (Priority 3 - Complete GDPR & EU AI Act Compliance)
 - **Notification Service (GDPR Article 33, EU AI Act Article 13)** - Multi-channel notification system
   - SMTP email notifications (lettre crate)
   - Twilio SMS notifications
@@ -402,7 +390,7 @@ veridion-nexus/
   - Background job processing (tokio::spawn)
   - Connection pooling tuning (sqlx)
 
-### ✅ Implemented (Enterprise Features)
+### Implemented (Enterprise Features)
 - **AI-BOM Export (CycloneDX v1.5)** - Standardized AI/ML Bill of Materials export
   - Endpoints: `GET /api/v1/ai_bom/{system_id}`, `POST /api/v1/ai_bom/inventory`
   - CycloneDX format for enterprise security tool integration
@@ -520,8 +508,131 @@ See `sdks/README.md` for complete documentation and examples.
 
 **AGPL-3.0** - See [LICENSE](LICENSE)
 
-Open-source with copyleft. If you modify and deploy as SaaS, you must open-source changes.  
-For commercial licensing: Open an [issue](https://github.com/Brano80/veridion-nexus/issues).
+Open-source with copyleft. If you modify and deploy as SaaS, you must open-source changes.
+
+---
+
+## 📋 Licensing & Commercial Pricing
+
+### Open Source (Community Edition)
+
+**Free to use** - You can run Veridion Nexus locally or in your own infrastructure at no cost under the AGPL-3.0 license.
+
+**What's included:**
+- All core compliance modules (Sovereign Lock, Crypto-Shredder, Privacy Bridge, Annex IV)
+- Full source code access
+- Docker deployment
+- Community documentation
+- Local development and testing
+
+**AGPL-3.0 Requirements:**
+- If you modify the code and deploy it as a service, you must open-source your changes
+- Perfect for internal use, development, and evaluation
+
+### Commercial License
+
+For production deployments where you need:
+- **Commercial licensing** (no AGPL copyleft requirements)
+- **Enterprise support** (SLA guarantees, dedicated support)
+- **Professional services** (implementation consulting, custom integrations)
+- **Priority features** (early access to new modules)
+
+### Pricing Tiers
+
+#### Tier 1: Starter (€35,000/year)
+
+**Deployment Mode**: Embedded (SDK-First)
+
+**Target**: Series A fintech/insurtech, 1-10 employees
+
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
+
+**Operational Modules**: Choose 2 included
+- Options: Data Subject Rights, Human Oversight, Risk Assessment, Breach Management
+
+**Includes**:
+- Up to 3 high-risk AI systems
+- All 6 AI Platform SDKs (Azure, AWS, GCP, LangChain, OpenAI, HuggingFace)
+- Email support (48h SLA)
+- Standard Annex IV templates
+- Community documentation
+
+**Ideal for**: Fintech startups, small healthcare providers
+
+#### Tier 2: Professional (€120,000/year) ⭐
+
+**Deployment Mode**: Embedded OR Proxy (customer choice)
+
+**Target**: Series B-D fintech/insurtech, 50-500 employees
+
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
+
+**Operational Modules**: All 10 modules included
+- Data Subject Rights, Human Oversight, Risk Assessment
+- Breach Management, Consent Management, DPIA Tracking
+- Retention Policies, Post-Market Monitoring
+- Green AI Telemetry, AI-BOM
+
+**Includes**:
+- Up to 15 high-risk AI systems
+- All 6 AI Platform SDKs
+- Slack channel support (12h SLA)
+- Webhook integrations
+- Monthly compliance reports
+- Quarterly business reviews
+
+**Ideal for**: Regional banks, mid-size insurance companies, growing enterprises
+
+#### Tier 3: Enterprise (€350,000/year base)
+
+**Deployment Mode**: Full Governance (complete platform)
+
+**Target**: Banks, large insurers, public companies, 1000+ employees
+
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
+
+**Operational Modules**: All included + priority feature requests
+
+**Includes**:
+- Up to 50 high-risk AI systems (first 50 included)
+- Deployment Options: SaaS, On-Premise, or Hybrid
+- All 6 AI Platform SDKs + custom integrations
+- Dedicated Customer Success Manager
+- 24/7 phone support
+- 99.9% SLA guarantee
+- Custom integrations (40 hours/year included)
+- Regulatory sandbox application support
+- Audit defense package (expert testimony)
+- Private Slack channel with engineering team
+
+**Overage**: €12,000 per 10 additional systems (after first 50)
+
+**Ideal for**: Tier 1 banks, large healthcare systems, systemically important institutions
+
+### Early Adopter Program
+
+**First 10 customers get 50% off** their first year subscription.
+
+**Design Partners**: Looking for 2-3 beta customers for free pilot program.
+
+### Add-Ons (All Tiers)
+
+- **Module Add-Ons** (Starter tier only): Additional Operational Module: €10,000/year each
+- **Deployment Upgrades**: Embedded → Proxy Mode: +€25,000/year | Embedded/Proxy → Full Governance: +€50,000/year
+- **Transaction-Based**: eIDAS Seals: €0.10 per seal (volume discounts available) | High-Volume Package: €50,000/year (unlimited seals)
+- **Professional Services**: Implementation Consulting: €2,500/day | Custom Integration: €5,000 per integration | Compliance Audit Support: €10,000 per audit
+
+### Contact for Commercial Licensing
+
+📧 **Sales Inquiry**: [Create Issue](https://github.com/Brano80/veridion-nexus/issues/new?title=Commercial%20License%20Inquiry)
+
+💼 **Partnership**: [Create Issue](https://github.com/Brano80/veridion-nexus/issues/new?title=Partnership%20Inquiry)
 
 ---
 
@@ -533,7 +644,9 @@ For commercial licensing: Open an [issue](https://github.com/Brano80/veridion-ne
 
 - 🐳 [Deployment Guide](DEPLOYMENT_GUIDE.md)  
 
-- 💻 [Quick Start](#-quick-start) (scroll up)
+- 💻 [Quick Start](#quick-start) (scroll up)
+
+**Run it locally for free** - The Community Edition is fully functional for development and testing. See [Quick Start](#quick-start) above.
 
 ### For Companies
 
