@@ -522,7 +522,7 @@ Open-source with copyleft. If you modify and deploy as SaaS, you must open-sourc
 
 ---
 
-## 📋 Licensing & Commercial Pricing
+##  Licensing & Commercial Pricing
 
 ### Open Source (Community Edition)
 
@@ -571,7 +571,7 @@ For production deployments where you need:
 
 **Ideal for**: Fintech startups, small healthcare providers
 
-#### Tier 2: Professional (€120,000/year) ⭐
+#### Tier 2: Professional (€120,000/year) 
 
 **Deployment Mode**: Embedded OR Proxy (customer choice)
 
@@ -650,21 +650,21 @@ For production deployments where you need:
 
 ### For Developers
 
-- 📖 [Architecture Docs](ARCHITECTURE.md)
+-  [Architecture Docs](ARCHITECTURE.md)
 
-- 🐳 [Deployment Guide](DEPLOYMENT_GUIDE.md)  
+-  [Deployment Guide](DEPLOYMENT_GUIDE.md)  
 
-- 💻 [Quick Start](#quick-start) (scroll up)
+-  [Quick Start](#quick-start) (scroll up)
 
 **Run it locally for free** - The Community Edition is fully functional for development and testing. See [Quick Start](#quick-start) above.
 
 ### For Companies
 
-- 📧 **Contact**: alchemistofconsciousness@gmail.com
+-  **Contact**: alchemistofconsciousness@gmail.com
 
-- 💼 **Early Adopter Program**: First 10 customers get 50% off
+-  **Early Adopter Program**: First 10 customers get 50% off
 
-- 🤝 **Design Partners**: Looking for 2-3 beta customers (free pilot)
+-  **Design Partners**: Looking for 2-3 beta customers (free pilot)
 
 ---
 
