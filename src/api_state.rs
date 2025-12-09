@@ -3,6 +3,7 @@ use crate::core::privacy_bridge::SignicatClient;
 use crate::database::Database;
 use crate::deployment::DeploymentConfig;
 use crate::integration::notifications::NotificationService;
+use dashmap::DashMap;
 use sqlx::PgPool;
 use std::sync::Arc;
 
@@ -22,6 +23,8 @@ pub struct AppState {
     pub deployment: DeploymentConfig,
     /// Notification service for GDPR Article 33 and EU AI Act Article 13
     pub notification_service: Arc<NotificationService>,
+    /// Revoked agents map (agent_id -> true if revoked)
+    pub revoked_agents: Arc<DashMap<String, bool>>,
 }
 
 impl AppState {
@@ -37,6 +40,7 @@ impl AppState {
             db_pool,
             deployment: DeploymentConfig::default(),
             notification_service: Arc::new(NotificationService::new()),
+            revoked_agents: Arc::new(DashMap::new()),
         })
     }
 
@@ -54,7 +58,7 @@ impl AppState {
         })
     }
 
-    /// Set system lockdown status
+    /// Set system lockdown status (global lockdown - panic button)
     pub async fn set_locked_down(&self, locked: bool) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO system_config (key, value) VALUES ('is_locked_down', $1)
@@ -64,6 +68,23 @@ impl AppState {
         .execute(&self.db_pool)
         .await?;
         Ok(())
+    }
+
+    /// Revoke access for a specific agent
+    pub fn revoke_agent(&self, agent_id: &str) {
+        self.revoked_agents.insert(agent_id.to_string(), true);
+        log::warn!("Agent revoked: {}", agent_id);
+    }
+
+    /// Restore access for a specific agent
+    pub fn restore_agent(&self, agent_id: &str) {
+        self.revoked_agents.remove(agent_id);
+        log::info!("Agent access restored: {}", agent_id);
+    }
+
+    /// Check if a specific agent is revoked
+    pub fn is_agent_revoked(&self, agent_id: &str) -> bool {
+        self.revoked_agents.contains_key(agent_id)
     }
 }
 

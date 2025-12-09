@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 use std::sync::Arc;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
+use maxminddb::Reader;
 use crate::api_state::AppState;
 use crate::core::sovereign_lock::EU_EEA_WHITELIST;
 
@@ -36,8 +37,8 @@ fn default_method() -> String {
 /// Proxy service for network-level compliance enforcement
 pub struct ProxyService {
     client: Client,
-    /// GeoIP database path (optional, uses hostname patterns if not available)
-    geoip_db_path: Option<String>,
+    /// GeoIP database reader (optional, uses hostname patterns if not available)
+    geoip_reader: Option<Arc<Reader<Vec<u8>>>>,
 }
 
 impl ProxyService {
@@ -47,9 +48,29 @@ impl ProxyService {
             .build()
             .expect("Failed to create HTTP client");
         
+        // Try to load GeoIP database
+        let geoip_reader = match std::env::var("GEOIP_DB_PATH") {
+            Ok(path) => {
+                match Reader::open_readfile(&path) {
+                    Ok(reader) => {
+                        log::info!("GeoIP database loaded successfully from: {}", path);
+                        Some(Arc::new(reader))
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to load GeoIP database from {}: {}. Continuing with hostname pattern matching only.", path, e);
+                        None
+                    }
+                }
+            }
+            Err(_) => {
+                log::info!("GEOIP_DB_PATH not set. GeoIP lookups disabled. Using hostname pattern matching only.");
+                None
+            }
+        };
+        
         Self {
             client,
-            geoip_db_path: std::env::var("GEOIP_DB_PATH").ok(),
+            geoip_reader,
         }
     }
 
@@ -70,15 +91,21 @@ impl ProxyService {
             return Ok((is_eu, country));
         }
 
-        // Second, try DNS resolution + IP-based heuristics
+        // Second, try DNS resolution + GeoIP lookup
         if let Ok(ip) = self.resolve_hostname(hostname).await {
             // Check if IP is in private ranges (assume EU for private IPs)
             if self.is_private_ip(&ip) {
                 return Ok((true, "EU".to_string()));
             }
             
-            // For public IPs without GeoIP, be conservative and block
-            // In production, this should use GeoIP database
+            // Try GeoIP lookup if database is available
+            if let Some(country_code) = self.lookup_geoip(&ip).await {
+                let is_eu = EU_EEA_WHITELIST.contains(&country_code.as_str());
+                return Ok((is_eu, country_code));
+            }
+            
+            // If GeoIP database is missing, log and be conservative
+            log::warn!("GeoIP database not available. Cannot determine country for IP: {}. Blocking request.", ip);
             return Ok((false, "UNKNOWN".to_string()));
         }
 
@@ -157,6 +184,40 @@ impl ProxyService {
                 }
             }
             Err(e) => Err(format!("DNS resolution failed: {}", e)),
+        }
+    }
+
+    /// Look up IP address in GeoIP database
+    /// Returns country code (e.g., "DE", "FR", "US") if found, None otherwise
+    async fn lookup_geoip(&self, ip: &str) -> Option<String> {
+        let geoip_reader = self.geoip_reader.as_ref()?;
+        
+        // Parse IP address
+        let ip_addr: std::net::IpAddr = match ip.parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                log::warn!("Failed to parse IP address '{}': {}", ip, e);
+                return None;
+            }
+        };
+
+        // Look up in GeoIP database
+        match geoip_reader.lookup::<maxminddb::geoip2::Country>(ip_addr) {
+            Ok(country) => {
+                if let Some(country_data) = country.country {
+                    if let Some(iso_code) = country_data.iso_code {
+                        let code = iso_code.to_string();
+                        log::debug!("GeoIP lookup for {}: {}", ip, code);
+                        return Some(code);
+                    }
+                }
+                log::debug!("GeoIP lookup for {}: No country code found", ip);
+                None
+            }
+            Err(e) => {
+                log::warn!("GeoIP lookup failed for {}: {}", ip, e);
+                None
+            }
         }
     }
 

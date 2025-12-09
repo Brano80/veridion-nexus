@@ -199,11 +199,20 @@ pub async fn log_action(
         Err(resp) => return resp,
     };
 
-    // A. KILL SWITCH CHECK
+    // A. AGENT REVOCATION CHECK (granular per agent)
+    if data.is_agent_revoked(&req.agent_id) {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "status": "AGENT_REVOKED",
+            "reason": "Agent access has been revoked",
+            "agent_id": req.agent_id
+        }));
+    }
+
+    // B. GLOBAL SYSTEM LOCKDOWN CHECK (panic button)
     if let Ok(true) = data.is_locked_down().await {
         return HttpResponse::Forbidden().json(serde_json::json!({
             "status": "SYSTEM_LOCKDOWN",
-            "reason": "Agent Identity Revoked"
+            "reason": "System-wide lockdown active"
         }));
     }
 
@@ -1011,7 +1020,8 @@ pub async fn shred_data(
     path = "/download_report",
     params(
         ("format" = Option<String>, Query, description = "Export format: pdf, json, xml (default: pdf)"),
-        ("seal_id" = Option<String>, Query, description = "Filter by specific seal_id")
+        ("seal_id" = Option<String>, Query, description = "Filter by specific seal_id"),
+        ("report_type" = Option<String>, Query, description = "Report type: annex_iv, dora_register (default: annex_iv)")
     ),
     responses(
         (status = 200, description = "Report generated successfully"),
@@ -1027,6 +1037,7 @@ pub async fn download_report(
     let format = crate::core::annex_iv::ExportFormat::from_str(format_str)
         .unwrap_or(crate::core::annex_iv::ExportFormat::Pdf);
     
+    let report_type = query.get("report_type").map(|s| s.as_str()).unwrap_or("annex_iv");
     let seal_id_filter = query.get("seal_id");
     
     // Build query with optional seal_id filter
@@ -1087,25 +1098,43 @@ pub async fn download_report(
                 compliance_records.push(record);
             }
             
-            let filename = format!("Veridion_Annex_IV_{}.{}", 
-                chrono::Utc::now().format("%Y%m%d_%H%M%S"),
-                format.file_extension()
-            );
-            let temp_file = format!("temp_report_{}.{}", 
-                uuid::Uuid::new_v4().to_string().replace("-", ""),
-                format.file_extension()
-            );
-            
-            // Generate report in requested format
-            let export_result = match format {
-                crate::core::annex_iv::ExportFormat::Pdf => {
-                    crate::core::annex_iv::generate_report(&compliance_records, &temp_file)
+            // Determine filename, temp_file, and generation function based on report_type
+            let (filename, temp_file, export_result) = match report_type {
+                "dora_register" => {
+                    // DORA Register: Simplified vendor supply chain report (PDF only for now)
+                    let filename = format!("Veridion_DORA_Register_{}.pdf", 
+                        chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                    );
+                    let temp_file = format!("temp_report_{}.pdf", 
+                        uuid::Uuid::new_v4().to_string().replace("-", "")
+                    );
+                    
+                    let result = crate::core::annex_iv::generate_dora_register(&compliance_records, &temp_file);
+                    (filename, temp_file, result)
                 }
-                crate::core::annex_iv::ExportFormat::Json => {
-                    crate::core::annex_iv::export_to_json(&compliance_records, &temp_file)
-                }
-                crate::core::annex_iv::ExportFormat::Xml => {
-                    crate::core::annex_iv::export_to_xml(&compliance_records, &temp_file)
+                _ => {
+                    // Default: Annex IV report
+                    let filename = format!("Veridion_Annex_IV_{}.{}", 
+                        chrono::Utc::now().format("%Y%m%d_%H%M%S"),
+                        format.file_extension()
+                    );
+                    let temp_file = format!("temp_report_{}.{}", 
+                        uuid::Uuid::new_v4().to_string().replace("-", ""),
+                        format.file_extension()
+                    );
+                    
+                    let result = match format {
+                        crate::core::annex_iv::ExportFormat::Pdf => {
+                            crate::core::annex_iv::generate_report(&compliance_records, &temp_file)
+                        }
+                        crate::core::annex_iv::ExportFormat::Json => {
+                            crate::core::annex_iv::export_to_json(&compliance_records, &temp_file)
+                        }
+                        crate::core::annex_iv::ExportFormat::Xml => {
+                            crate::core::annex_iv::export_to_xml(&compliance_records, &temp_file)
+                        }
+                    };
+                    (filename, temp_file, result)
                 }
             };
             
@@ -1115,8 +1144,15 @@ pub async fn download_report(
                         // Clean up temp file
                         let _ = fs::remove_file(&temp_file);
                         
+                        // Determine content type based on report type
+                        let content_type = if report_type == "dora_register" {
+                            "application/pdf"
+                        } else {
+                            format.content_type()
+                        };
+                        
                         HttpResponse::Ok()
-                            .content_type(format.content_type())
+                            .content_type(content_type)
                             .append_header(ContentDisposition::attachment(&filename))
                             .body(bytes)
             } else { 
@@ -1145,10 +1181,46 @@ pub async fn download_report(
 }
 
 // 5. REVOKE ACCESS
-#[utoipa::path(post, path = "/revoke_access")]
-pub async fn revoke_access(data: web::Data<AppState>) -> impl Responder {
+#[derive(Deserialize, ToSchema)]
+pub struct RevokeAccessRequest {
+    /// Optional agent_id to revoke. If not provided, triggers global system lockdown.
+    #[schema(example = "agent-001")]
+    pub agent_id: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/revoke_access",
+    request_body = RevokeAccessRequest,
+    responses(
+        (status = 200, description = "Access revoked successfully"),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "System Management"
+)]
+pub async fn revoke_access(
+    req: Option<web::Json<RevokeAccessRequest>>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    // Check if agent_id is provided in request body
+    if let Some(body) = req {
+        if let Some(agent_id) = &body.agent_id {
+            // Granular revocation: revoke specific agent
+            data.revoke_agent(agent_id);
+            return HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": format!("Agent '{}' access revoked", agent_id),
+                "agent_id": agent_id
+            }));
+        }
+    }
+
+    // No agent_id provided: trigger global system lockdown (panic button)
     match data.set_locked_down(true).await {
-        Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "SUCCESS"})),
+        Ok(_) => HttpResponse::Ok().json(serde_json::json!({
+            "status": "SUCCESS",
+            "message": "Global system lockdown activated"
+        })),
         Err(e) => {
             let request_id = generate_request_id();
             log_error_safely("setting lockdown", &e, &request_id);

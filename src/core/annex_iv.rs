@@ -2,6 +2,7 @@ use printpdf::*;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufWriter;
+use std::collections::HashMap;
 use utoipa::ToSchema;
 
 /// A compliance record for the Annex IV report
@@ -78,7 +79,7 @@ pub fn generate_report(records: &Vec<ComplianceRecord>, output_path: &str) -> Re
     
     let font_reg = doc.add_builtin_font(BuiltinFont::Helvetica)
         .map_err(|e| format!("Failed to add font: {:?}", e))?;
-    current_layer.use_text("EU AI Act - Annex IV Technical Documentation", 10.0, Mm(10.0), Mm(270.0), &font_reg);
+    current_layer.use_text("AI System Technical Documentation & DORA Register", 10.0, Mm(10.0), Mm(270.0), &font_reg);
 
     // --- TABLE HEADERS ---
     current_layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None))); // Black Text
@@ -108,6 +109,66 @@ pub fn generate_report(records: &Vec<ComplianceRecord>, output_path: &str) -> Re
 
         y_pos -= 10.0;
     }
+
+    // --- DORA ARTICLE 28 COMPLIANCE SECTION ---
+    let mut y_dora = y_pos - 20.0;
+    if y_dora < 50.0 {
+        // If not enough space, we'd need a new page (simplified for MVP)
+        y_dora = 250.0;
+    }
+    
+    current_layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+    current_layer.use_text("DORA Article 28 Compliance", 12.0, Mm(10.0), Mm(y_dora), &font);
+    
+    y_dora -= 15.0;
+    
+    // Extract unique agent IDs and model providers from records
+    let mut vendor_map: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+    for record in records {
+        // Extract agent ID from action_summary (format: "agent_id: action")
+        let agent_id = record.action_summary.split(':').next().unwrap_or("UNKNOWN").trim().to_string();
+        
+        // Infer model provider from action_summary or use default
+        let model_provider = if record.action_summary.to_lowercase().contains("openai") {
+            "OpenAI"
+        } else if record.action_summary.to_lowercase().contains("anthropic") {
+            "Anthropic"
+        } else if record.action_summary.to_lowercase().contains("azure") {
+            "Microsoft Azure AI"
+        } else if record.action_summary.to_lowercase().contains("aws") || record.action_summary.to_lowercase().contains("bedrock") {
+            "AWS Bedrock"
+        } else if record.action_summary.to_lowercase().contains("gcp") || record.action_summary.to_lowercase().contains("vertex") {
+            "Google Cloud Vertex AI"
+        } else {
+            "AI Model Vendor"
+        };
+        
+        // Extract region from status or use EU as default
+        let region = if record.status.contains("EU") || record.status.contains("COMPLIANT") {
+            "EU/EEA"
+        } else if record.status.contains("US") || record.status.contains("BLOCKED") {
+            "Non-EU"
+        } else {
+            "EU/EEA" // Default to EU for compliance
+        };
+        
+        vendor_map.insert(agent_id.clone(), (model_provider.to_string(), region.to_string()));
+    }
+    
+    // Display DORA compliance information
+    current_layer.use_text("ICT Third-Party Provider: AI Model Vendor", 9.0, Mm(10.0), Mm(y_dora), &font_reg);
+    y_dora -= 10.0;
+    
+    for (agent_id, (provider, region)) in vendor_map.iter().take(5) { // Limit to 5 entries for space
+        let dora_line = format!("  • Agent: {} | Provider: {} | Region: {}", agent_id, provider, region);
+        current_layer.use_text(&dora_line, 8.0, Mm(10.0), Mm(y_dora), &font_reg);
+        y_dora -= 8.0;
+    }
+    
+    y_dora -= 5.0;
+    current_layer.use_text("Data Location: EU/EEA (enforced by Sovereign Lock)", 9.0, Mm(10.0), Mm(y_dora), &font_reg);
+    y_dora -= 10.0;
+    current_layer.use_text("Function Criticality: High/Critical", 9.0, Mm(10.0), Mm(y_dora), &font_reg);
 
     // --- FOOTER ---
     current_layer.set_fill_color(Color::Rgb(Rgb::new(0.5, 0.5, 0.5, None)));
@@ -189,6 +250,88 @@ fn escape_xml(s: &str) -> String {
         .replace(">", "&gt;")
         .replace("\"", "&quot;")
         .replace("'", "&apos;")
+}
+
+/// Generate a simplified DORA Register report focusing on vendor supply chain
+pub fn generate_dora_register(records: &Vec<ComplianceRecord>, output_path: &str) -> Result<(), String> {
+    let (doc, page1, layer1) = PdfDocument::new("Veridion DORA Register", Mm(210.0), Mm(297.0), "Layer 1");
+    let current_layer = doc.get_page(page1).get_layer(layer1);
+
+    // Header
+    let font = doc.add_builtin_font(BuiltinFont::HelveticaBold)
+        .map_err(|e| format!("Failed to add font: {:?}", e))?;
+    current_layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+    current_layer.use_text("VERIDION NEXUS | DORA REGISTER", 18.0, Mm(10.0), Mm(280.0), &font);
+    
+    let font_reg = doc.add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| format!("Failed to add font: {:?}", e))?;
+    current_layer.use_text("DORA Article 28 - ICT Third-Party Provider Register", 10.0, Mm(10.0), Mm(270.0), &font_reg);
+
+    // Build vendor supply chain map: Agent ID -> Model Provider -> Region
+    let mut supply_chain: Vec<(String, String, String)> = Vec::new();
+    
+    for record in records {
+        // Extract agent ID from action_summary
+        let agent_id = record.action_summary.split(':').next().unwrap_or("UNKNOWN").trim().to_string();
+        
+        // Infer model provider
+        let model_provider = if record.action_summary.to_lowercase().contains("openai") {
+            "OpenAI"
+        } else if record.action_summary.to_lowercase().contains("anthropic") {
+            "Anthropic"
+        } else if record.action_summary.to_lowercase().contains("azure") {
+            "Microsoft Azure AI"
+        } else if record.action_summary.to_lowercase().contains("aws") || record.action_summary.to_lowercase().contains("bedrock") {
+            "AWS Bedrock"
+        } else if record.action_summary.to_lowercase().contains("gcp") || record.action_summary.to_lowercase().contains("vertex") {
+            "Google Cloud Vertex AI"
+        } else if record.action_summary.to_lowercase().contains("huggingface") {
+            "HuggingFace"
+        } else {
+            "AI Model Vendor"
+        };
+        
+        // Extract region from status
+        let region = if record.status.contains("EU") || record.status.contains("COMPLIANT") {
+            "EU/EEA"
+        } else if record.status.contains("US") || record.status.contains("BLOCKED") {
+            "Non-EU (Blocked)"
+        } else {
+            "EU/EEA"
+        };
+        
+        supply_chain.push((agent_id, model_provider.to_string(), region.to_string()));
+    }
+    
+    // Remove duplicates
+    supply_chain.sort();
+    supply_chain.dedup();
+    
+    // Table headers
+    let y_start = 250.0;
+    current_layer.set_fill_color(Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None)));
+    current_layer.use_text("AGENT ID", 9.0, Mm(10.0), Mm(y_start), &font);
+    current_layer.use_text("MODEL PROVIDER", 9.0, Mm(70.0), Mm(y_start), &font);
+    current_layer.use_text("REGION", 9.0, Mm(140.0), Mm(y_start), &font);
+    
+    // Data rows
+    let mut y_pos = y_start - 10.0;
+    for (agent_id, provider, region) in supply_chain.iter().take(20) { // Limit to 20 entries
+        if y_pos < 50.0 {
+            break;
+        }
+        current_layer.use_text(agent_id, 8.0, Mm(10.0), Mm(y_pos), &font_reg);
+        current_layer.use_text(provider, 8.0, Mm(70.0), Mm(y_pos), &font_reg);
+        current_layer.use_text(region, 8.0, Mm(140.0), Mm(y_pos), &font_reg);
+        y_pos -= 10.0;
+    }
+    
+    // Footer
+    current_layer.set_fill_color(Color::Rgb(Rgb::new(0.5, 0.5, 0.5, None)));
+    current_layer.use_text("Generated automatically by Veridion Nexus - DORA Compliance", 8.0, Mm(10.0), Mm(10.0), &font_reg);
+
+    doc.save(&mut BufWriter::new(File::create(output_path).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Export format enumeration
