@@ -5939,3 +5939,153 @@ pub async fn get_data_quality_report(
         })).collect::<Vec<_>>()
     }))
 }
+
+// PROXY MODE - Network-level compliance enforcement
+// Endpoint: POST /api/v1/proxy
+#[utoipa::path(
+    post,
+    path = "/proxy",
+    request_body = crate::integration::proxy::ProxyRequest,
+    responses(
+        (status = 200, description = "Request proxied successfully"),
+        (status = 403, description = "Sovereignty violation - blocked"),
+        (status = 400, description = "Invalid request"),
+        (status = 500, description = "Proxy error")
+    ),
+    tag = "Proxy Mode"
+)]
+pub async fn proxy_request(
+    req: HttpRequest,
+    body: web::Json<crate::integration::proxy::ProxyRequest>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    use crate::integration::proxy::ProxyService;
+    
+    let proxy_req = body.into_inner();
+    let proxy_service = ProxyService::new();
+
+    // 1. Check data sovereignty BEFORE forwarding
+    match proxy_service.check_sovereignty(&proxy_req.target_url).await {
+        Ok((is_eu, country)) => {
+            if !is_eu {
+                // Log the violation attempt
+                let agent_id = req.headers()
+                    .get("X-Agent-ID")
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or("unknown")
+                    .to_string();
+                
+                let user_id = extract_claims(&req, &crate::security::AuthService::new().unwrap())
+                    .ok()
+                    .map(|c| c.sub);
+
+                // Log compliance action
+                let _ = sqlx::query(
+                    "INSERT INTO compliance_records (
+                        seal_id, tx_id, agent_id, action_summary, status, 
+                        risk_level, user_id, timestamp, target_region
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                )
+                .bind(&uuid::Uuid::new_v4().to_string())
+                .bind(&uuid::Uuid::new_v4().to_string())
+                .bind(&agent_id)
+                .bind(&format!("PROXY_BLOCKED: Attempted connection to {} ({})", proxy_req.target_url, country))
+                .bind("BLOCKED (SOVEREIGNTY)")
+                .bind("HIGH")
+                .bind(user_id.as_deref())
+                .bind(chrono::Utc::now())
+                .bind(&country)
+                .execute(&data.db_pool)
+                .await;
+
+                return HttpResponse::Forbidden().json(serde_json::json!({
+                    "error": "SOVEREIGN_LOCK_VIOLATION",
+                    "message": format!("Data sovereignty violation: target server in {} is not in EU/EEA", country),
+                    "target_url": proxy_req.target_url,
+                    "detected_country": country,
+                    "status": "BLOCKED"
+                }));
+            }
+        }
+        Err(e) => {
+            // If we can't determine sovereignty, be conservative and block
+            log::warn!("Could not determine sovereignty for {}: {}", proxy_req.target_url, e);
+            return HttpResponse::Forbidden().json(serde_json::json!({
+                "error": "SOVEREIGNTY_CHECK_FAILED",
+                "message": "Could not verify data sovereignty. Request blocked for safety.",
+                "target_url": proxy_req.target_url
+            }));
+        }
+    }
+
+    // 2. Forward request to target
+    match proxy_service.forward_request(&proxy_req).await {
+        Ok(response) => {
+            let status = response.status();
+            let headers = response.headers().clone();
+            
+            // Get response body
+            let body_bytes = match response.bytes().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log_error_safely("reading proxy response", &e, &generate_request_id());
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": "Failed to read response from target server"
+                    }));
+                }
+            };
+
+            // 3. Log successful proxy action (async, non-blocking)
+            let db_pool = data.db_pool.clone();
+            let target_url = proxy_req.target_url.clone();
+            let agent_id = req.headers()
+                .get("X-Agent-ID")
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("unknown")
+                .to_string();
+            
+            tokio::spawn(async move {
+                let _ = sqlx::query(
+                    "INSERT INTO compliance_records (
+                        seal_id, tx_id, agent_id, action_summary, status, 
+                        risk_level, timestamp, target_region
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+                )
+                .bind(&uuid::Uuid::new_v4().to_string())
+                .bind(&uuid::Uuid::new_v4().to_string())
+                .bind(&agent_id)
+                .bind(&format!("PROXY_ALLOWED: {}", target_url))
+                .bind("COMPLIANT")
+                .bind("LOW")
+                .bind(chrono::Utc::now())
+                .bind("EU")
+                .execute(&db_pool)
+                .await;
+            });
+
+            // Build response with original headers and body
+            let mut http_response = HttpResponse::build(status);
+            
+            // Copy relevant headers (exclude connection, content-encoding, etc.)
+            for (key, value) in headers.iter() {
+                let key_str = key.as_str();
+                if !matches!(key_str, "connection" | "content-encoding" | "transfer-encoding" | "content-length") {
+                    if let Ok(val_str) = value.to_str() {
+                        http_response.append_header((key_str, val_str));
+                    }
+                }
+            }
+
+            http_response.body(body_bytes)
+        }
+        Err(e) => {
+            let request_id = generate_request_id();
+            log_error_safely("forwarding proxy request", &e, &request_id);
+            HttpResponse::BadGateway().json(serde_json::json!({
+                "error": "PROXY_ERROR",
+                "message": "Failed to forward request to target server",
+                "request_id": request_id
+            }))
+        }
+    }
+}

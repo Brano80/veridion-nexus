@@ -82,11 +82,13 @@ use routes::*;
         routes::modules::enable_module,
         routes::modules::disable_module,
         routes::modules::get_module_status,
+        routes::proxy_request,
     ),
     components(schemas(
         routes::LogRequest,
         routes::LogResponse,
         routes::ShredRequest,
+        crate::integration::proxy::ProxyRequest,
         compliance_models::RiskAssessment,
         compliance_models::HumanOversightRequest,
         compliance_models::HumanOversightResponse,
@@ -338,6 +340,8 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/data_quality/lineage").route(web::post().to(routes::record_data_lineage)))
                     .service(web::resource("/data_quality/report/{seal_id}").route(web::get().to(routes::get_data_quality_report)))
                     .service(web::resource("/modules/{name}/status").route(web::get().to(routes::modules::get_module_status)))
+                    // Proxy Mode - Network-level compliance enforcement
+                    .service(web::resource("/proxy").route(web::post().to(routes::proxy_request)))
             )
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}")
