@@ -640,13 +640,13 @@ For production deployments where you need:
 
 ### Contact for Commercial Licensing
 
-📧 **Sales Inquiry**: sales@veridion.nexus
 
-💼 **Partnership**: sales@veridion.nexus
+
+ **Partnership**: alchemistofconsciousness@gmail.com
 
 ---
 
-## 🚀 Get Started
+##  Get Started
 
 ### For Developers
 
@@ -660,7 +660,7 @@ For production deployments where you need:
 
 ### For Companies
 
-- 📧 **Contact**: sales@veridion.nexus
+- 📧 **Contact**: alchemistofconsciousness@gmail.com
 
 - 💼 **Early Adopter Program**: First 10 customers get 50% off
 
