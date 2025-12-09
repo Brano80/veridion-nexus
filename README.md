@@ -630,9 +630,9 @@ For production deployments where you need:
 
 ### Contact for Commercial Licensing
 
-📧 **Sales Inquiry**: [Create Issue](https://github.com/Brano80/veridion-nexus/issues/new?title=Commercial%20License%20Inquiry)
+📧 **Sales Inquiry**: sales@veridion.nexus (or email the maintainer directly)
 
-💼 **Partnership**: [Create Issue](https://github.com/Brano80/veridion-nexus/issues/new?title=Partnership%20Inquiry)
+💼 **Partnership**: sales@veridion.nexus (or email the maintainer directly)
 
 ---
 
@@ -650,7 +650,7 @@ For production deployments where you need:
 
 ### For Companies
 
-- 📧 **Contact**: [Create Issue](https://github.com/Brano80/veridion-nexus/issues/new?title=Partnership%20Inquiry)
+- 📧 **Contact**: sales@veridion.nexus (or email the maintainer directly)
 
 - 💼 **Early Adopter Program**: First 10 customers get 50% off
 

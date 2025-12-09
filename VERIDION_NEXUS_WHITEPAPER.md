@@ -172,7 +172,7 @@ eIDAS Regulation (EU 910/2014) requires **Qualified Electronic Seals (QES)** for
 
 **"Compliance as a Runtime Constraint"**
 
-Veridion Nexus enforces compliance at the network level, making it **physically impossible** for AI agents to violate EU regulations. Instead of relying on policies and audits, we provide **technical guarantees**.
+Veridion Nexus enforces compliance at the network level, making it **physically impossible** for AI agents to violate EU regulations. Instead of relying on policies and audits, Veridion Nexus provides **technical guarantees**.
 
 ## The Four Pillars
 
@@ -909,7 +909,7 @@ Veridion Nexus supports three deployment modes to fit different use cases:
 - Expensive (€150K-€300K/year)
 - Long implementation time (3-6 months)
 
-**Our Advantage**: Technical runtime enforcement, EU-first architecture, faster deployment
+**Veridion Nexus Advantage**: Technical runtime enforcement, EU-first architecture, faster deployment
 
 ### TrustArc AI Compliance
 
@@ -923,7 +923,7 @@ Veridion Nexus supports three deployment modes to fit different use cases:
 - Limited AI Act coverage
 - Less technical depth
 
-**Our Advantage**: Network-level enforcement, solves GDPR paradox technically
+**Veridion Nexus Advantage**: Network-level enforcement, solves GDPR paradox technically
 
 ## Indirect Competitors
 
@@ -933,7 +933,7 @@ Veridion Nexus supports three deployment modes to fit different use cases:
 
 **Relevance**: Different market (security vs. AI compliance), but similar positioning
 
-**Our Advantage**: AI Act specific, technical enforcement vs. assessment
+**Veridion Nexus Advantage**: AI Act specific, technical enforcement vs. assessment
 
 ### Custom Solutions
 
@@ -945,7 +945,7 @@ Veridion Nexus supports three deployment modes to fit different use cases:
 - Maintenance burden
 - Risk-prone
 
-**Our Advantage**: 70% cost reduction, weeks vs. months, proven expertise
+**Veridion Nexus Advantage**: 70% cost reduction, weeks vs. months, proven expertise
 
 ## Competitive Moat
 
@@ -1180,51 +1180,16 @@ Veridion Nexus supports three deployment modes to fit different use cases:
 
 # TEAM & ADVISORS
 
-## Founding Team
+## Founder
 
-### [Founder Name] - CEO & Co-Founder
+### [Founder Name] - Lead Architect & Founder
 
 **Background**:
 - [Relevant experience in compliance, AI, or enterprise software]
 - [Previous company/role]
 - [Education/credentials]
 
-**Role**: Product vision, fundraising, strategic partnerships
-
-### [Co-Founder Name] - CTO & Co-Founder
-
-**Background**:
-- [Relevant experience in systems programming, security, or compliance]
-- [Previous company/role]
-- [Education/credentials]
-
-**Role**: Technical architecture, engineering leadership
-
-## Advisory Board
-
-### [Advisor Name] - Regulatory Compliance
-
-**Background**:
-- [EU AI Act expertise, GDPR experience, etc.]
-- [Previous role/company]
-
-**Value**: Regulatory guidance, compliance strategy
-
-### [Advisor Name] - Enterprise Sales
-
-**Background**:
-- [B2B SaaS sales experience]
-- [Previous role/company]
-
-**Value**: Sales strategy, customer introductions
-
-### [Advisor Name] - Technical Architecture
-
-**Background**:
-- [Systems architecture, security expertise]
-- [Previous role/company]
-
-**Value**: Technical review, architecture guidance
+**Role**: Product vision, technical architecture, fundraising, strategic partnerships
 
 ## Hiring Plan
 
@@ -1780,9 +1745,7 @@ The project includes a demonstration Python agent (`uipath_agent.py`) that simul
 
 **Veridion Nexus**
 
-Email: investors@veridion.nexus  
-Website: https://veridion.nexus  
-Address: [To be added]
+Email: investors@veridion.nexus
 
 ---
 

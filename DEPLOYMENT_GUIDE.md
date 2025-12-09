@@ -317,6 +317,41 @@ Monitor their performance and adjust intervals if needed.
 2. Review background worker intervals
 3. Monitor database query performance
 
+## Known Limitations
+
+### Proxy Mode: GeoIP Database Integration
+
+**Current Status**: The proxy service (`src/integration/proxy.rs`) uses **strict hostname allowlisting** for sovereignty checks. It does not currently use a full GeoIP database for IP-based geolocation.
+
+**How it works now:**
+- The proxy checks known hostname patterns (e.g., `*.eu`, `*.de`, `*.azure.com`, `*.amazonaws.com`)
+- For hostnames matching known EU/EEA patterns, requests are allowed
+- For hostnames matching known US/non-EU patterns, requests are blocked
+- For **unknown hostnames** that resolve to public IPs, the system **conservatively blocks** the request (returns `UNKNOWN` country code)
+
+**Impact:**
+- ✅ Works correctly for major cloud providers (Azure, AWS, GCP) with region-specific hostnames
+- ✅ Works for EU-based services with `.eu`, `.de`, `.fr`, etc. TLDs
+- ⚠️ **May block valid EU traffic** if you use a generic EU server hostname that isn't in the allowlist
+- ⚠️ Custom or internal hostnames may be incorrectly blocked
+
+**Workaround for testing:**
+- Use hostnames that match known patterns (e.g., `api-eu.yourdomain.com` won't work, but `api.yourdomain.eu` will)
+- For internal services, use private IP ranges (detected automatically as EU)
+- Add custom hostname patterns to `check_hostname_pattern()` function if needed
+
+**Production requirement:**
+- **Custom GeoIP database integration is required for production deployments**
+- Consider integrating MaxMind GeoIP2, IP2Location, or similar service
+- Set `GEOIP_DB_PATH` environment variable when GeoIP integration is implemented
+- This limitation will be addressed in a future release
+
+**If you encounter blocked valid EU traffic:**
+1. Check the hostname pattern in the proxy logs
+2. Verify the hostname matches known EU patterns
+3. Consider adding the hostname to the allowlist temporarily
+4. For production, plan for GeoIP database integration
+
 ## Updates & Maintenance
 
 ### Updating the Application
