@@ -8,11 +8,12 @@ name = "veridion_nexus"
 path = "src/lib.rs"
 
 [dependencies]
-actix-web = "4"
+actix-web = { version = "4", features = ["compress-gzip", "compress-brotli"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 env_logger = "0.10"
+log = "0.4"
 utoipa = { version = "4", features = ["actix_extras"] }
 utoipa-swagger-ui = { version = "6", features = ["actix-web"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -33,11 +34,10 @@ bcrypt = "0.15"
 futures = "0.3"
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder"] }
 tokio-native-tls = "0.3"
-actix-web-compress = "0.2"
 flate2 = "1.0"
 
 [dev-dependencies]
-actix-web = "4"
+actix-web = { version = "4", features = ["compress-gzip", "compress-brotli"] }
 serde_json = "1"
 tokio-test = "0.4"
 urlencoding = "2.1"

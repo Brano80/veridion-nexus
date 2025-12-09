@@ -1,4 +1,5 @@
 use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware};
+use actix_web::middleware::Compress;
 use actix_cors::Cors;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;

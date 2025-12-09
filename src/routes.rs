@@ -904,13 +904,17 @@ pub async fn shred_data(
     .await;
 
     // Update compliance record status
+    let erased_summary = "[GDPR PURGED] Data Cryptographically Erased";
+    let erased_status = "ERASED (Art. 17)";
     let result = sqlx::query(
         "UPDATE compliance_records 
-         SET action_summary = '[GDPR PURGED] Data Cryptographically Erased',
-             status = 'ERASED (Art. 17)'
+         SET action_summary = $2,
+             status = $3
          WHERE seal_id = $1"
     )
     .bind(&req.seal_id)
+    .bind(erased_summary)
+    .bind(erased_status)
     .execute(&data.db_pool)
     .await;
 
@@ -1144,7 +1148,8 @@ pub async fn revoke_access(data: web::Data<AppState>) -> impl Responder {
         Ok(_) => HttpResponse::Ok().json(serde_json::json!({"status": "SUCCESS"})),
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( setting lockdown: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("setting lockdown", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to set lockdown"
             }))
@@ -1205,7 +1210,8 @@ pub async fn data_subject_access(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching user data: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching user data", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch user data"
             }))
@@ -1267,7 +1273,8 @@ pub async fn data_subject_export(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching user data: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching user data", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch user data"
             }))
@@ -1297,19 +1304,21 @@ pub async fn data_subject_rectify(
     
     if user_id != req.user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "User ID mismatch"
+            "error": "User ID does not match"
         }));
     }
     
     // Update record in database
+    let status_text = "RECTIFIED (Art. 16)";
     let result = sqlx::query(
         "UPDATE compliance_records 
-         SET action_summary = $1, status = 'RECTIFIED (Art. 16)'
+         SET action_summary = $1, status = $4
          WHERE seal_id = $2 AND user_id = $3"
     )
     .bind(format!("[RECTIFIED] {}", req.corrected_data))
     .bind(&req.seal_id)
     .bind(&user_id)
+    .bind(status_text)
     .execute(&data.db_pool)
     .await;
 
@@ -1411,7 +1420,7 @@ pub async fn request_processing_restriction(
     let user_id = path.into_inner();
     if user_id != req.user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "User ID mismatch"
+            "error": "User ID does not match"
         }));
     }
 
@@ -1478,7 +1487,8 @@ pub async fn request_processing_restriction(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( creating restriction: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("creating restriction", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to create processing restriction"
             }))
@@ -1508,7 +1518,7 @@ pub async fn lift_processing_restriction(
     let user_id = path.into_inner();
     if user_id != req.user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "User ID mismatch"
+            "error": "User ID does not match"
         }));
     }
 
@@ -1546,7 +1556,8 @@ pub async fn lift_processing_restriction(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( lifting restriction: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("lifting restriction", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to lift processing restriction"
             }))
@@ -1615,7 +1626,8 @@ pub async fn get_processing_restrictions(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching restrictions: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching restrictions", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch processing restrictions"
             }))
@@ -1647,7 +1659,7 @@ pub async fn request_processing_objection(
     let user_id = path.into_inner();
     if user_id != req.user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "User ID mismatch"
+            "error": "User ID does not match"
         }));
     }
 
@@ -1710,7 +1722,8 @@ pub async fn request_processing_objection(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( creating objection: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("creating objection", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to create processing objection"
             }))
@@ -1740,7 +1753,7 @@ pub async fn withdraw_processing_objection(
     let user_id = path.into_inner();
     if user_id != req.user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "User ID mismatch"
+            "error": "User ID does not match"
         }));
     }
 
@@ -1778,7 +1791,8 @@ pub async fn withdraw_processing_objection(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( withdrawing objection: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("withdrawing objection", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to withdraw processing objection"
             }))
@@ -1808,7 +1822,7 @@ pub async fn reject_processing_objection(
     let user_id = path.into_inner();
     if user_id != req.user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "User ID mismatch"
+            "error": "User ID does not match"
         }));
     }
 
@@ -1855,7 +1869,8 @@ pub async fn reject_processing_objection(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( rejecting objection: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("rejecting objection", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to reject processing objection"
             }))
@@ -1924,7 +1939,8 @@ pub async fn get_processing_objections(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching objections: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching objections", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch processing objections"
             }))
@@ -1956,7 +1972,7 @@ pub async fn request_human_review(
     let user_id = path.into_inner();
     if user_id != req.user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "User ID mismatch"
+            "error": "User ID does not match"
         }));
     }
 
@@ -2033,7 +2049,8 @@ pub async fn request_human_review(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( requesting review: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("requesting review", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to request human review"
             }))
@@ -2063,7 +2080,7 @@ pub async fn appeal_automated_decision(
     let user_id = path.into_inner();
     if user_id != req.user_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "User ID mismatch"
+            "error": "User ID does not match"
         }));
     }
 
@@ -2106,7 +2123,8 @@ pub async fn appeal_automated_decision(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( appealing decision: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("appealing decision", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to appeal automated decision"
             }))
@@ -2187,7 +2205,8 @@ pub async fn get_automated_decisions(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching automated decisions: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching automated decisions", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch automated decisions"
             }))
@@ -2213,7 +2232,7 @@ pub async fn require_human_oversight(
     
     if seal_id != req.seal_id {
         return HttpResponse::BadRequest().json(serde_json::json!({
-            "error": "Seal ID mismatch"
+            "error": "Seal ID does not match"
         }));
     }
     
@@ -2252,7 +2271,8 @@ pub async fn require_human_oversight(
         },
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( requiring human oversight: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("requiring human oversight", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to require human oversight"
             }))
@@ -2436,7 +2456,8 @@ pub async fn get_risk_assessment(
         })),
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching risk assessment: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching risk assessment", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch risk assessment"
             }))
@@ -2512,7 +2533,8 @@ pub async fn get_all_risks(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching risks: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching risks", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch risks"
             }))
@@ -2647,7 +2669,8 @@ pub async fn report_breach(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( reporting breach: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("reporting breach", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to report breach"
             }))
@@ -2725,7 +2748,8 @@ pub async fn get_breaches(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching breaches: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching breaches", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch breaches"
             }))
@@ -2828,7 +2852,8 @@ pub async fn grant_consent(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( granting consent: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("granting consent", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to grant consent"
             }))
@@ -2892,7 +2917,8 @@ pub async fn withdraw_consent(
         })),
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( withdrawing consent: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("withdrawing consent", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to withdraw consent"
             }))
@@ -2950,7 +2976,8 @@ pub async fn get_user_consents(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching consents: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching consents", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch consents"
             }))
@@ -3069,7 +3096,8 @@ pub async fn create_dpia(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( creating DPIA: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("creating DPIA", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to create DPIA"
             }))
@@ -3251,7 +3279,8 @@ pub async fn get_all_dpias(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching DPIAs: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching DPIAs", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch DPIAs"
             }))
@@ -3317,7 +3346,8 @@ pub async fn create_retention_policy(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( creating retention policy: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("creating retention policy", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to create retention policy"
             }))
@@ -3379,7 +3409,8 @@ pub async fn get_expiring_records(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching expiring records: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching expiring records", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch expiring records"
             }))
@@ -3524,7 +3555,8 @@ pub async fn assign_retention_policy(
         })),
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching policy: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching policy", &e, &request_id);
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch retention policy"
             }));
@@ -3599,7 +3631,8 @@ pub async fn assign_retention_policy(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( assigning retention policy: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("assigning retention policy", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to assign retention policy"
             }))
@@ -3666,7 +3699,8 @@ pub async fn get_retention_status(
         })),
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching retention status: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching retention status", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch retention status"
             }))
@@ -3712,7 +3746,8 @@ pub async fn get_all_retention_policies(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching retention policies: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching retention policies", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch retention policies"
             }))
@@ -3794,13 +3829,17 @@ pub async fn execute_retention_deletions(
                     .await;
                     
                     // Update compliance record
+                    let retention_summary = "[RETENTION EXPIRED] Data Automatically Deleted";
+                    let retention_status = "DELETED (Retention Period)";
                     sqlx::query(
                         "UPDATE compliance_records 
-                         SET action_summary = '[RETENTION EXPIRED] Data Automatically Deleted',
-                             status = 'DELETED (Retention Period)'
+                         SET action_summary = $2,
+                             status = $3
                          WHERE seal_id = $1"
                     )
                     .bind(&assignment.record_id)
+                    .bind(retention_summary)
+                    .bind(retention_status)
                     .execute(&data.db_pool)
                     .await
                 } else {
@@ -3951,7 +3990,8 @@ pub async fn create_monitoring_event(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( creating monitoring event: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("creating monitoring event", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to create monitoring event"
             }))
@@ -4002,7 +4042,8 @@ pub async fn update_event_resolution(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( checking event existence: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("checking event existence", &e, &request_id);
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Database error"
             }));
@@ -4031,7 +4072,8 @@ pub async fn update_event_resolution(
         Ok(_) => {}
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( updating event: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("updating event", &e, &request_id);
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to update monitoring event"
             }));
@@ -4063,7 +4105,8 @@ pub async fn update_event_resolution(
         })),
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( updating event resolution: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("updating event resolution", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to update event resolution"
             }))
@@ -4161,7 +4204,8 @@ pub async fn get_all_monitoring_events(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching monitoring events: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching monitoring events", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch monitoring events"
             }))
@@ -4213,7 +4257,8 @@ pub async fn get_system_health(
         })),
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching system health: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching system health", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch system health"
             }))
@@ -4282,7 +4327,8 @@ pub async fn export_ai_bom(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching system inventory: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching system inventory", &e, &request_id);
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch system inventory"
             }));
@@ -4438,7 +4484,8 @@ pub async fn register_ai_system(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( registering AI system: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("registering AI system", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to register AI system"
             }))
@@ -4609,7 +4656,8 @@ pub async fn register_webhook(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( registering webhook: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("registering webhook", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to register webhook"
             }))
@@ -4761,7 +4809,8 @@ pub async fn update_webhook(
         })),
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( updating webhook: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("updating webhook", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to update webhook"
             }))
@@ -4873,7 +4922,8 @@ pub async fn get_webhook_deliveries(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching webhook deliveries: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching webhook deliveries", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch webhook deliveries"
             }))
@@ -4968,7 +5018,8 @@ pub async fn set_notification_preferences(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( setting notification preferences: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("setting notification preferences", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to set notification preferences"
             }))
@@ -5036,7 +5087,8 @@ pub async fn get_notification_preferences(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching notification preferences: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching notification preferences", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch notification preferences"
             }))
@@ -5120,7 +5172,7 @@ pub async fn get_user_notifications(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching user notifications: {}", e);
+            log_error_safely("fetching user notifications", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch notifications"
             }))
@@ -5291,7 +5343,7 @@ pub async fn get_processing_records(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching processing records: {}", e);
+            log_error_safely("fetching processing records", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch processing records"
             }))
@@ -5463,7 +5515,8 @@ pub async fn create_conformity_assessment(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( creating conformity assessment: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("creating conformity assessment", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to create conformity assessment"
             }))
@@ -5573,7 +5626,8 @@ pub async fn get_conformity_assessments(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( fetching conformity assessments: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("fetching conformity assessments", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to fetch conformity assessments"
             }))
@@ -5661,7 +5715,8 @@ pub async fn record_data_quality_metric(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( recording data quality metric: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("recording data quality metric", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to record metric"
             }))
@@ -5714,7 +5769,8 @@ pub async fn record_data_bias(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( recording bias detection: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("recording bias detection", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to record bias detection"
             }))
@@ -5772,7 +5828,8 @@ pub async fn record_data_lineage(
         }
         Err(e) => {
             let request_id = generate_request_id();
-            log_error_safely( recording data lineage: {}", e);
+            let request_id = generate_request_id();
+            log_error_safely("recording data lineage", &e, &request_id);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to record lineage"
             }))
