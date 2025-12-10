@@ -9,6 +9,7 @@ use crate::security::{
 pub mod auth;
 pub mod api_keys;
 pub mod modules;
+pub mod wizard;
 
 /// Helper function to authenticate and authorize user
 async fn authenticate_and_authorize(
@@ -6907,6 +6908,8 @@ pub struct RollbackRequest {
     pub target_version: Option<i32>,
     #[schema(example = "Reverting due to production issues")]
     pub notes: Option<String>,
+    #[schema(example = false)]
+    pub dry_run: Option<bool>, // If true, simulate rollback without executing
 }
 
 /// Rollback a policy to a previous version
@@ -6962,6 +6965,7 @@ pub async fn rollback_policy(
     }
 
     let (policy_type, _current_version) = current_policy.unwrap();
+    let is_dry_run = rollback_req.dry_run.unwrap_or(false);
 
     // Get target version (or previous version if not specified)
     let target_version = if let Some(version) = rollback_req.target_version {
@@ -6980,6 +6984,77 @@ pub async fn rollback_policy(
         .flatten()
         .unwrap_or(1)
     };
+
+    // Check if target version exists
+    let target_policy: Option<(Uuid, String, i32)> = sqlx::query_as(
+        "SELECT id, policy_name, version_number FROM policy_versions 
+         WHERE policy_type = $1 AND version_number = $2"
+    )
+    .bind(&policy_type)
+    .bind(target_version)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    if target_policy.is_none() {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "TARGET_VERSION_NOT_FOUND",
+            "message": format!("Version {} not found for policy type {}", target_version, policy_type)
+        }));
+    }
+
+    let (target_policy_id, target_policy_name, _) = target_policy.unwrap();
+
+    // If dry run, return simulation without executing
+    if is_dry_run {
+        // Get current policy metrics
+        let current_metrics: Option<(i64, i64, f64)> = sqlx::query_as(
+            "SELECT 
+                COUNT(*)::bigint as total,
+                COUNT(*) FILTER (WHERE status LIKE '%BLOCKED%')::bigint as blocked,
+                AVG(inference_time_ms) as avg_latency
+             FROM compliance_records 
+             WHERE agent_id IN (
+                 SELECT DISTINCT agent_id FROM compliance_records 
+                 WHERE timestamp >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+             )
+             AND timestamp >= CURRENT_TIMESTAMP - INTERVAL '7 days'"
+        )
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        let (total_requests, blocked_requests, avg_latency) = current_metrics.unwrap_or((0, 0, 100.0));
+        let success_rate = if total_requests > 0 {
+            ((total_requests - blocked_requests) as f64 / total_requests as f64) * 100.0
+        } else {
+            100.0
+        };
+
+        return HttpResponse::Ok().json(serde_json::json!({
+            "status": "DRY_RUN",
+            "message": format!("Rollback simulation: Would rollback to version {} ({})", target_version, target_policy_name),
+            "target_policy_id": target_policy_id,
+            "target_policy_name": target_policy_name,
+            "target_version": target_version,
+            "current_policy_id": policy_id,
+            "estimated_rollback_time_ms": 50.0, // Estimated based on typical rollback
+            "estimated_rollback_time_sec": 0.05,
+            "estimated_sla_met": true,
+            "current_metrics": {
+                "total_requests": total_requests,
+                "blocked_requests": blocked_requests,
+                "success_rate": success_rate,
+                "avg_latency_ms": avg_latency
+            },
+            "note": "This is a simulation. No changes were made. Use dry_run=false to execute the rollback."
+        }));
+    }
+
+    // Track rollback start time for speed measurement
+    let rollback_start = std::time::Instant::now();
 
     // Deactivate current policy
     let _ = sqlx::query(
@@ -7001,11 +7076,16 @@ pub async fn rollback_policy(
     .fetch_optional(&data.db_pool)
     .await;
 
+    // Calculate rollback duration
+    let rollback_duration_ms = rollback_start.elapsed().as_millis() as f64;
+    let rollback_duration_sec = rollback_duration_ms / 1000.0;
+    let sla_met = rollback_duration_sec < 30.0; // < 30 seconds SLA
+
     match result {
         Ok(Some(row)) => {
             let new_policy_id: Uuid = row.get(0);
 
-            // Log rollback in history
+            // Log rollback in history with speed metrics
             let _ = sqlx::query(
                 "INSERT INTO policy_activation_history (policy_version_id, action, performed_by, previous_version_id, notes)
                  VALUES ($1, 'ROLLED_BACK', $2, $3, $4)"
@@ -7017,11 +7097,32 @@ pub async fn rollback_policy(
             .execute(&data.db_pool)
             .await;
 
+            // Log rollback speed metrics
+            let _ = sqlx::query(
+                "INSERT INTO policy_rollback_metrics (policy_version_id, rollback_duration_ms, sla_met, performed_by)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (policy_version_id) DO UPDATE SET
+                   rollback_duration_ms = EXCLUDED.rollback_duration_ms,
+                   sla_met = EXCLUDED.sla_met,
+                   performed_by = EXCLUDED.performed_by,
+                   updated_at = CURRENT_TIMESTAMP"
+            )
+            .bind(new_policy_id)
+            .bind(rollback_duration_ms)
+            .bind(sla_met)
+            .bind(&claims.sub)
+            .execute(&data.db_pool)
+            .await;
+
             HttpResponse::Ok().json(serde_json::json!({
                 "status": "SUCCESS",
-                "message": format!("Policy rolled back to version {}", target_version),
+                "message": format!("Policy rolled back to version {} in {:.2}s", target_version, rollback_duration_sec),
                 "new_policy_id": new_policy_id,
-                "previous_policy_id": policy_id
+                "previous_policy_id": policy_id,
+                "rollback_duration_ms": rollback_duration_ms,
+                "rollback_duration_sec": rollback_duration_sec,
+                "sla_met": sla_met,
+                "sla_threshold_sec": 30.0
             }))
         }
         Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
@@ -8293,6 +8394,166 @@ pub async fn configure_circuit_breaker(
     }
 }
 
+// ========== CANARY DEPLOYMENT CONFIGURATION ==========
+
+#[derive(Deserialize, ToSchema)]
+pub struct CanaryConfigRequest {
+    #[schema(example = 10)]
+    pub traffic_percentage: Option<i32>,
+    #[schema(example = true)]
+    pub auto_promote_enabled: Option<bool>,
+    #[schema(example = true)]
+    pub auto_rollback_enabled: Option<bool>,
+    #[schema(example = 95.0)]
+    pub promotion_threshold: Option<f64>,
+    #[schema(example = 5.0)]
+    pub rollback_threshold: Option<f64>,
+    #[schema(example = 100)]
+    pub min_requests_for_promotion: Option<i64>,
+    #[schema(example = 10)]
+    pub evaluation_window_minutes: Option<i32>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CanaryConfigResponse {
+    pub policy_id: Uuid,
+    pub traffic_percentage: i32,
+    pub auto_promote_enabled: bool,
+    pub auto_rollback_enabled: bool,
+    pub promotion_threshold: f64,
+    pub rollback_threshold: f64,
+    pub min_requests_for_promotion: i64,
+    pub evaluation_window_minutes: i32,
+}
+
+/// Configure canary deployment for a policy
+#[utoipa::path(
+    post,
+    path = "/policies/{policy_id}/canary-config",
+    tag = "Canary Deployment",
+    params(
+        ("policy_id" = Uuid, Path, description = "Policy version ID")
+    ),
+    request_body = CanaryConfigRequest,
+    responses(
+        (status = 200, description = "Canary configuration updated", body = CanaryConfigResponse),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Policy not found"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn configure_canary(
+    policy_id: web::Path<Uuid>,
+    req: web::Json<CanaryConfigRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id = policy_id.into_inner();
+    let config = req.into_inner();
+    
+    // Validate traffic percentage
+    if let Some(traffic_pct) = config.traffic_percentage {
+        if traffic_pct < 0 || traffic_pct > 100 {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "INVALID_TRAFFIC_PERCENTAGE",
+                "message": "Traffic percentage must be between 0 and 100"
+            }));
+        }
+    }
+    
+    // Get current policy to preserve existing values
+    #[derive(sqlx::FromRow)]
+    struct PolicyRow {
+        rollout_percentage: Option<i32>,
+        canary_auto_promote_enabled: Option<bool>,
+        canary_success_threshold: Option<f64>,
+        canary_failure_threshold: Option<f64>,
+        canary_min_requests: Option<i64>,
+        canary_evaluation_window_minutes: Option<i32>,
+    }
+    
+    let current: Option<PolicyRow> = sqlx::query_as::<_, PolicyRow>(
+        "SELECT rollout_percentage, canary_auto_promote_enabled, canary_success_threshold,
+                canary_failure_threshold, canary_min_requests, canary_evaluation_window_minutes
+         FROM policy_versions WHERE id = $1"
+    )
+    .bind(policy_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+    
+    if current.is_none() {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "POLICY_NOT_FOUND",
+            "message": "Policy not found"
+        }));
+    }
+    
+    let current = current.unwrap();
+    
+    let traffic_percentage = config.traffic_percentage.unwrap_or(current.rollout_percentage.unwrap_or(100));
+    let auto_promote_enabled = config.auto_promote_enabled.unwrap_or(current.canary_auto_promote_enabled.unwrap_or(false));
+    let auto_rollback_enabled = config.auto_rollback_enabled.unwrap_or(auto_promote_enabled);
+    let promotion_threshold = config.promotion_threshold.unwrap_or(current.canary_success_threshold.unwrap_or(95.0));
+    let rollback_threshold = config.rollback_threshold.unwrap_or(current.canary_failure_threshold.unwrap_or(5.0));
+    let min_requests = config.min_requests_for_promotion.unwrap_or(current.canary_min_requests.unwrap_or(100));
+    let window_minutes = config.evaluation_window_minutes.unwrap_or(current.canary_evaluation_window_minutes.unwrap_or(10));
+    
+    let result = sqlx::query(
+        "UPDATE policy_versions 
+         SET rollout_percentage = $1,
+             canary_auto_promote_enabled = $2,
+             canary_success_threshold = $3,
+             canary_failure_threshold = $4,
+             canary_min_requests = $5,
+             canary_evaluation_window_minutes = $6
+         WHERE id = $7
+         RETURNING rollout_percentage"
+    )
+    .bind(traffic_percentage)
+    .bind(auto_promote_enabled)
+    .bind(promotion_threshold)
+    .bind(rollback_threshold)
+    .bind(min_requests)
+    .bind(window_minutes)
+    .bind(policy_id)
+    .fetch_optional(&data.db_pool)
+    .await;
+    
+    match result {
+        Ok(Some(_)) => {
+            HttpResponse::Ok().json(CanaryConfigResponse {
+                policy_id,
+                traffic_percentage,
+                auto_promote_enabled,
+                auto_rollback_enabled,
+                promotion_threshold,
+                rollback_threshold,
+                min_requests_for_promotion: min_requests,
+                evaluation_window_minutes: window_minutes,
+            })
+        }
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "POLICY_NOT_FOUND",
+            "message": "Policy not found"
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "FAILED_TO_CONFIGURE",
+            "message": format!("Failed to configure canary deployment: {}", e)
+        }))
+    }
+}
+
 // ========== CIRCUIT BREAKER ANALYTICS ==========
 
 #[derive(Serialize, ToSchema)]
@@ -8873,6 +9134,53 @@ pub async fn preview_policy_impact(
                 0
             };
 
+            // Calculate cost impact estimation
+            // Get average latency from compliance records for affected agents
+            let avg_latency_ms: Option<f64> = sqlx::query_scalar(
+                "SELECT AVG(inference_time_ms) 
+                 FROM compliance_records 
+                 WHERE agent_id = ANY($1) 
+                   AND timestamp >= $2 
+                   AND inference_time_ms IS NOT NULL"
+            )
+            .bind(&result.critical_agents)
+            .bind(Utc::now() - chrono::Duration::days(time_range_days))
+            .fetch_optional(&data.db_pool)
+            .await
+            .ok()
+            .flatten();
+
+            let avg_latency_ms = avg_latency_ms.unwrap_or(100.0); // Default 100ms if no data
+
+            // Estimate throughput impact (requests per second that would be blocked)
+            let estimated_blocked_rps = if time_range_days > 0 {
+                (estimated_daily_transactions as f64) / 86400.0 // Convert daily to per second
+            } else {
+                0.0
+            };
+
+            // Cost estimation (example calculations - adjust based on your infrastructure costs)
+            // Latency cost: Additional latency per request * cost per ms * blocked requests
+            // Throughput cost: Blocked RPS * cost per RPS
+            // These are placeholder calculations - adjust based on actual infrastructure costs
+            let cost_per_ms_per_request = 0.0001; // $0.0001 per ms per request (example)
+            let cost_per_rps = 0.10; // $0.10 per RPS (example)
+            
+            let estimated_latency_cost = (avg_latency_ms * cost_per_ms_per_request) * (estimated_transaction_volume_affected as f64);
+            let estimated_throughput_cost = estimated_blocked_rps * cost_per_rps * (time_range_days as f64);
+            let estimated_total_cost = estimated_latency_cost + estimated_throughput_cost;
+
+            let cost_impact = serde_json::json!({
+                "estimated_latency_cost_usd": estimated_latency_cost,
+                "estimated_throughput_cost_usd": estimated_throughput_cost,
+                "estimated_total_cost_usd": estimated_total_cost,
+                "average_latency_ms": avg_latency_ms,
+                "estimated_blocked_rps": estimated_blocked_rps,
+                "cost_per_ms_per_request": cost_per_ms_per_request,
+                "cost_per_rps": cost_per_rps,
+                "note": "Cost estimates are based on example infrastructure pricing. Adjust based on your actual costs."
+            });
+
             // Calculate confidence score based on sample size and time range
             let confidence_score = if result.total_requests >= 10000 {
                 95.0 // High confidence with large sample
@@ -8955,10 +9263,49 @@ pub async fn preview_policy_impact(
                 }
             });
             
+            // Create blast radius visualization data
+            // Group affected systems by business function and location
+            let mut blast_radius: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+            
+            for system in &affected_systems {
+                let bf = system.get("business_function").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                let location = system.get("location").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                let impact = system.get("impact_level").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+                
+                let key = format!("{}:{}", bf, location);
+                let entry = blast_radius.entry(key).or_insert_with(|| serde_json::json!({
+                    "business_function": bf,
+                    "location": location,
+                    "critical_count": 0,
+                    "partial_count": 0,
+                    "affected_agents": []
+                }));
+                
+                if impact == "CRITICAL" {
+                    if let Some(count) = entry.get_mut("critical_count") {
+                        if let Some(v) = count.as_i64() {
+                            *count = serde_json::json!(v + 1);
+                        }
+                    }
+                } else {
+                    if let Some(count) = entry.get_mut("partial_count") {
+                        if let Some(v) = count.as_i64() {
+                            *count = serde_json::json!(v + 1);
+                        }
+                    }
+                }
+                
+                if let Some(agent_id) = system.get("agent_id").and_then(|v| v.as_str()) {
+                    entry.get_mut("affected_agents").unwrap().as_array_mut().unwrap().push(serde_json::json!(agent_id));
+                }
+            }
+
             HttpResponse::Ok().json(serde_json::json!({
                 "simulation_result": result,
                 "business_impact": business_impact,
                 "affected_systems": affected_systems,
+                "cost_impact": cost_impact,
+                "blast_radius": blast_radius,
                 "confidence_score": confidence_score,
                 "historical_analysis": historical_analysis,
                 "preview_mode": true,
@@ -9528,9 +9875,11 @@ pub async fn approve_policy(
                     let received_count = approval_count;
                     tokio::spawn(async move {
                         let notification_service = crate::integration::notifications::NotificationService::new();
-                        let request = crate::integration::notifications::NotificationRequest {
-                            user_id: creator,
-                            notification_type: crate::integration::notifications::NotificationType::HighRiskAiAction,
+                        
+                        // Send email notification
+                        let email_request = crate::integration::notifications::NotificationRequest {
+                            user_id: creator.clone(),
+                            notification_type: crate::integration::notifications::NotificationType::PolicyApprovalCompleted,
                             channel: crate::integration::notifications::NotificationChannel::Email,
                             subject: Some("Policy Approved - Ready to Activate".to_string()),
                             body: format!(
@@ -9545,7 +9894,27 @@ pub async fn approve_policy(
                             related_entity_type: Some("POLICY".to_string()),
                             related_entity_id: Some(policy_id_clone.to_string()),
                         };
-                        let _ = notification_service.send_notification(&db_pool_clone, request).await;
+                        let _ = notification_service.send_notification(&db_pool_clone, email_request).await;
+                        
+                        // Send Slack notification
+                        let slack_request = crate::integration::notifications::NotificationRequest {
+                            user_id: creator,
+                            notification_type: crate::integration::notifications::NotificationType::PolicyApprovalCompleted,
+                            channel: crate::integration::notifications::NotificationChannel::Slack,
+                            subject: Some("✅ Policy Approved".to_string()),
+                            body: format!(
+                                "*Policy Approved - Ready to Activate*\n\n\
+                                • Policy ID: `{}`\n\
+                                • Required Approvals: {}\n\
+                                • Received Approvals: {}\n\n\
+                                The policy can now be activated from the dashboard.",
+                                policy_id_clone, required_count, received_count
+                            ),
+                            language: Some("en".to_string()),
+                            related_entity_type: Some("POLICY".to_string()),
+                            related_entity_id: Some(policy_id_clone.to_string()),
+                        };
+                        let _ = notification_service.send_notification(&db_pool_clone, slack_request).await;
                     });
                 }
             } else {
@@ -9580,9 +9949,11 @@ pub async fn approve_policy(
                             let required_count = p.approval_required_count;
                             tokio::spawn(async move {
                                 let notification_service = crate::integration::notifications::NotificationService::new();
-                                let request = crate::integration::notifications::NotificationRequest {
-                                    user_id: approver,
-                                    notification_type: crate::integration::notifications::NotificationType::HighRiskAiAction,
+                                
+                                // Send email notification
+                                let email_request = crate::integration::notifications::NotificationRequest {
+                                    user_id: approver.clone(),
+                                    notification_type: crate::integration::notifications::NotificationType::PolicyApprovalPending,
                                     channel: crate::integration::notifications::NotificationChannel::Email,
                                     subject: Some("Policy Approval Required".to_string()),
                                     body: format!(
@@ -9597,7 +9968,28 @@ pub async fn approve_policy(
                                     related_entity_type: Some("POLICY".to_string()),
                                     related_entity_id: Some(policy_id_clone.to_string()),
                                 };
-                                let _ = notification_service.send_notification(&db_pool_clone, request).await;
+                                let _ = notification_service.send_notification(&db_pool_clone, email_request).await;
+                                
+                                // Send Slack notification
+                                let slack_request = crate::integration::notifications::NotificationRequest {
+                                    user_id: approver,
+                                    notification_type: crate::integration::notifications::NotificationType::PolicyApprovalPending,
+                                    channel: crate::integration::notifications::NotificationChannel::Slack,
+                                    subject: Some("⚠️ Policy Approval Required".to_string()),
+                                    body: format!(
+                                        "*Policy Approval Required*\n\n\
+                                        • Policy ID: `{}`\n\
+                                        • Required Approvals: {}\n\
+                                        • Remaining Approvals Needed: {}\n\n\
+                                        Please review and approve or reject the policy from the <{}|Approval Queue dashboard>.",
+                                        policy_id_clone, required_count, remaining, 
+                                        format!("http://localhost:3000/approvals/queue")
+                                    ),
+                                    language: Some("en".to_string()),
+                                    related_entity_type: Some("POLICY".to_string()),
+                                    related_entity_id: Some(policy_id_clone.to_string()),
+                                };
+                                let _ = notification_service.send_notification(&db_pool_clone, slack_request).await;
                             });
                         }
                     }

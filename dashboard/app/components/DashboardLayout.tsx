@@ -37,6 +37,7 @@ import { useModules } from "../hooks/useModules";
 
 // Core Compliance Hub navigation (always visible)
 const coreNavigation = [
+  { name: "Setup Wizard", href: "/wizard", icon: Settings, module: null },
   { name: "Compliance Overview", href: "/", icon: LayoutDashboard, module: null },
   { name: "Runtime Logs", href: "/runtime-logs", icon: ScrollText, module: null },
   { name: "Human Oversight", href: "/human-oversight", icon: Eye, module: "module_human_oversight" },

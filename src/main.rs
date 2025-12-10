@@ -14,6 +14,7 @@ mod background_worker;
 mod security;
 mod module_service;
 mod deployment;
+mod services;
 
 // Core Runtime Compliance Engine (mandatory)
 mod core;
@@ -111,6 +112,7 @@ use routes::*;
         routes::get_enforcement_mode,
         routes::set_enforcement_mode,
         routes::configure_circuit_breaker,
+        routes::configure_canary,
         routes::preview_policy_impact,
         routes::get_policy_health,
         routes::approve_policy,
@@ -129,6 +131,13 @@ use routes::*;
         routes::register_cloud_provider,
         routes::sync_cloud_compliance,
         routes::get_cloud_compliance_summary,
+        routes::wizard::create_company_profile,
+        routes::wizard::get_company_profile,
+        routes::wizard::recommend_modules,
+        routes::wizard::calculate_price,
+        routes::wizard::start_trial,
+        routes::wizard::get_subscription,
+        routes::wizard::upgrade_subscription,
     ),
     components(schemas(
         routes::LogRequest,
@@ -241,6 +250,8 @@ use routes::*;
         routes::SetEnforcementModeRequest,
         routes::CircuitBreakerConfigRequest,
         routes::CircuitBreakerConfigResponse,
+        routes::CanaryConfigRequest,
+        routes::CanaryConfigResponse,
         routes::PolicyHealthResponse,
         routes::PolicyApprovalRequest,
         routes::PolicyApprovalResponse,
@@ -263,6 +274,14 @@ use routes::*;
         routes::CloudProviderResponse,
         routes::CloudSyncResponse,
         routes::CloudComplianceSummaryResponse,
+        routes::wizard::CompanyProfileResponse,
+        routes::wizard::RecommendModulesRequest,
+        routes::wizard::CalculatePriceRequest,
+        routes::wizard::SubscriptionResponse,
+        routes::wizard::UpgradeRequest,
+        crate::services::wizard_service::ModuleRecommendationResponse,
+        crate::services::wizard_service::RecommendedModule,
+        crate::services::wizard_service::PricingBreakdown,
     ))
 )]
 struct ApiDoc;
@@ -465,6 +484,15 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/data_quality/lineage").route(web::post().to(routes::record_data_lineage)))
                     .service(web::resource("/data_quality/report/{seal_id}").route(web::get().to(routes::get_data_quality_report)))
                     .service(web::resource("/modules/{name}/status").route(web::get().to(routes::modules::get_module_status)))
+                    
+                    // Wizard endpoints
+                    .service(web::resource("/wizard/company-profile").route(web::post().to(routes::wizard::create_company_profile)))
+                    .service(web::resource("/wizard/company-profile/{company_id}").route(web::get().to(routes::wizard::get_company_profile)))
+                    .service(web::resource("/wizard/recommend-modules").route(web::post().to(routes::wizard::recommend_modules)))
+                    .service(web::resource("/wizard/calculate-price").route(web::post().to(routes::wizard::calculate_price)))
+                    .service(web::resource("/wizard/start-trial").route(web::post().to(routes::wizard::start_trial)))
+                    .service(web::resource("/wizard/subscription/{company_id}").route(web::get().to(routes::wizard::get_subscription)))
+                    .service(web::resource("/wizard/upgrade").route(web::post().to(routes::wizard::upgrade_subscription)))
                     // Proxy Mode - Network-level compliance enforcement
                     .service(web::resource("/proxy").route(web::post().to(routes::proxy_request)))
                     // Policy Management - Operational Safety
@@ -519,6 +547,8 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/system/enforcement-mode").route(web::get().to(routes::get_enforcement_mode)).route(web::post().to(routes::set_enforcement_mode)))
                     // Circuit Breaker Configuration
                     .service(web::resource("/policies/{policy_id}/circuit-breaker/config").route(web::post().to(routes::configure_circuit_breaker)))
+                    // Canary Deployment Configuration
+                    .service(web::resource("/policies/{policy_id}/canary-config").route(web::post().to(routes::configure_canary)))
             )
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}")

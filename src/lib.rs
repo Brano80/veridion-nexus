@@ -10,6 +10,10 @@ pub mod security;
 pub mod module_service;
 pub mod background_worker;
 pub mod deployment;
+pub mod services;
+
+pub use services::wizard_service;
+pub use services::legislative_service;
 
 // Core Runtime Compliance Engine (mandatory)
 pub mod core;

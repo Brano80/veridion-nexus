@@ -63,12 +63,45 @@ async function fetchCanaryAnalytics(): Promise<CanaryAnalytics> {
   return res.json();
 }
 
+async function updateCanaryTraffic(policyId: string, trafficPercentage: number) {
+  const res = await fetch(`${API_BASE}/policies/${policyId}/canary-config`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      traffic_percentage: trafficPercentage,
+    }),
+  });
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Unauthorized - Please login");
+    }
+    const error = await res.json();
+    throw new Error(error.message || `Failed to update canary traffic: ${res.status}`);
+  }
+  return res.json();
+}
+
 export default function CanaryPage() {
+  const queryClient = useQueryClient();
   const { data: analytics, isLoading, error } = useQuery({
     queryKey: ["canary-analytics"],
     queryFn: fetchCanaryAnalytics,
     refetchInterval: 30000, // Refresh every 30 seconds
   });
+
+  const updateTrafficMutation = useMutation({
+    mutationFn: ({ policyId, percentage }: { policyId: string; percentage: number }) =>
+      updateCanaryTraffic(policyId, percentage),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["canary-analytics"] });
+      alert("Canary traffic percentage updated successfully");
+    },
+    onError: (error: Error) => {
+      alert(`Failed to update canary traffic: ${error.message}`);
+    },
+  });
+
+  const rolloutTemplates = [1, 5, 10, 25, 50, 100];
 
   if (isLoading) {
     return (

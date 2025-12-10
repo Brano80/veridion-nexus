@@ -44,6 +44,25 @@ interface SimulationResult {
   simulation_timestamp: string;
 }
 
+interface CostImpact {
+  estimated_latency_cost_usd: number;
+  estimated_throughput_cost_usd: number;
+  estimated_total_cost_usd: number;
+  average_latency_ms: number;
+  estimated_blocked_rps: number;
+  cost_per_ms_per_request: number;
+  cost_per_rps: number;
+  note: string;
+}
+
+interface BlastRadiusEntry {
+  business_function: string;
+  location: string;
+  critical_count: number;
+  partial_count: number;
+  affected_agents: string[];
+}
+
 async function fetchPolicyImpact(timeRange: string = "30d") {
   const days = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90;
   const res = await fetch(`${API_BASE}/analytics/policy-impact?time_range=${days}`, {
@@ -100,6 +119,8 @@ async function rollbackPolicy(policyId: string, targetVersion?: number, notes?: 
 export default function PolicyImpactPage() {
   const [timeRange, setTimeRange] = useState("30d");
   const [simulationResult, setSimulationResult] = useState<SimulationResult | null>(null);
+  const [costImpact, setCostImpact] = useState<CostImpact | null>(null);
+  const [blastRadius, setBlastRadius] = useState<Record<string, BlastRadiusEntry>>({});
   const [isSimulating, setIsSimulating] = useState(false);
   const [simulationConfig, setSimulationConfig] = useState({
     blocked_countries: ["US", "CN", "RU"],
@@ -127,8 +148,17 @@ export default function PolicyImpactPage() {
   const handleSimulate = async () => {
     setIsSimulating(true);
     try {
-      const result = await simulatePolicy("SOVEREIGN_LOCK", simulationConfig, timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90);
-      setSimulationResult(result);
+      const days = timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90;
+      const res = await fetch(`${API_BASE}/policies/preview-impact?policy_type=SOVEREIGN_LOCK&policy_config=${encodeURIComponent(JSON.stringify(simulationConfig))}&time_range_days=${days}`, {
+        headers: getAuthHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error(`Failed to preview impact: ${res.status}`);
+      }
+      const data = await res.json();
+      setSimulationResult(data.simulation_result);
+      setCostImpact(data.cost_impact);
+      setBlastRadius(data.blast_radius || {});
     } catch (error: any) {
       alert(`Simulation failed: ${error.message}`);
     } finally {

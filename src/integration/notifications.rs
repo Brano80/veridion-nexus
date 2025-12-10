@@ -19,6 +19,7 @@ pub enum NotificationChannel {
     Email,
     Sms,
     InApp,
+    Slack,
 }
 
 impl ToString for NotificationChannel {
@@ -27,6 +28,7 @@ impl ToString for NotificationChannel {
             NotificationChannel::Email => "EMAIL".to_string(),
             NotificationChannel::Sms => "SMS".to_string(),
             NotificationChannel::InApp => "IN_APP".to_string(),
+            NotificationChannel::Slack => "SLACK".to_string(),
         }
     }
 }
@@ -45,6 +47,9 @@ pub enum NotificationType {
     CircuitBreakerOpened,
     PolicyHealthDegraded,
     PolicyHealthCritical, // Circuit breaker opened
+    PolicyApprovalPending, // Policy requires approval
+    PolicyApprovalCompleted, // Policy approved/rejected
+    PolicyAutoRollback, // Policy auto-rolled back
 }
 
 impl ToString for NotificationType {
@@ -61,6 +66,9 @@ impl ToString for NotificationType {
             NotificationType::CircuitBreakerOpened => "CIRCUIT_BREAKER_OPENED".to_string(),
             NotificationType::PolicyHealthDegraded => "POLICY_HEALTH_DEGRADED".to_string(),
             NotificationType::PolicyHealthCritical => "POLICY_HEALTH_CRITICAL".to_string(),
+            NotificationType::PolicyApprovalPending => "POLICY_APPROVAL_PENDING".to_string(),
+            NotificationType::PolicyApprovalCompleted => "POLICY_APPROVAL_COMPLETED".to_string(),
+            NotificationType::PolicyAutoRollback => "POLICY_AUTO_ROLLBACK".to_string(),
         }
     }
 }
@@ -89,6 +97,8 @@ pub struct NotificationService {
     twilio_account_sid: Option<String>,
     twilio_auth_token: Option<String>,
     twilio_from_number: Option<String>,
+    slack_webhook_url: Option<String>,
+    slack_channel: Option<String>,
 }
 
 impl NotificationService {
@@ -108,6 +118,8 @@ impl NotificationService {
             twilio_account_sid: std::env::var("TWILIO_ACCOUNT_SID").ok(),
             twilio_auth_token: std::env::var("TWILIO_AUTH_TOKEN").ok(),
             twilio_from_number: std::env::var("TWILIO_FROM_NUMBER").ok(),
+            slack_webhook_url: std::env::var("SLACK_WEBHOOK_URL").ok(),
+            slack_channel: std::env::var("SLACK_CHANNEL").ok(),
         }
     }
 
@@ -187,6 +199,9 @@ impl NotificationService {
                 NotificationChannel::InApp => {
                     // In-app notifications are stored in DB only, no external service needed
                     Ok("IN_APP".to_string())
+                }
+                NotificationChannel::Slack => {
+                    self.send_slack(&request.body, request.subject.as_deref()).await
                 }
             };
 
@@ -328,6 +343,61 @@ impl NotificationService {
             // Fallback: log notification (for development/testing)
             println!("📱 [SMS - MOCK] To: {} | Body: {}", to_number, body);
             Ok("SMS_MOCKED".to_string())
+        }
+    }
+
+    /// Send Slack notification via webhook
+    async fn send_slack(&self, text: &str, subject: Option<&str>) -> Result<String, String> {
+        if let Some(webhook_url) = &self.slack_webhook_url {
+            let channel = self.slack_channel.as_deref().unwrap_or("#compliance-alerts");
+            
+            // Format Slack message payload
+            let mut blocks = Vec::new();
+            
+            if let Some(subj) = subject {
+                blocks.push(serde_json::json!({
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": subj
+                    }
+                }));
+            }
+            
+            blocks.push(serde_json::json!({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": text
+                }
+            }));
+            
+            let payload = serde_json::json!({
+                "channel": channel,
+                "text": subject.unwrap_or(text),
+                "blocks": blocks
+            });
+            
+            let response = self.client
+                .post(webhook_url)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| format!("Slack webhook request failed: {}", e))?;
+            
+            if response.status().is_success() {
+                println!("💬 [Slack] Successfully sent to {}", channel);
+                Ok("SLACK_SENT".to_string())
+            } else {
+                let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                eprintln!("💬 [Slack] Webhook error: {}", error_text);
+                Err(format!("Slack webhook error: {}", error_text))
+            }
+        } else {
+            // Fallback: log notification (for development/testing)
+            println!("💬 [Slack - MOCK] Channel: {} | Message: {}", 
+                self.slack_channel.as_deref().unwrap_or("#compliance-alerts"), text);
+            Ok("SLACK_MOCKED".to_string())
         }
     }
 
