@@ -83,6 +83,52 @@ use routes::*;
         routes::modules::disable_module,
         routes::modules::get_module_status,
         routes::proxy_request,
+        routes::simulate_policy,
+        routes::rollback_policy,
+        routes::get_policy_impact_analytics,
+        routes::get_shadow_mode_analytics,
+        routes::get_circuit_breaker_analytics,
+        routes::get_canary_analytics,
+        routes::get_tprm_compliance_report,
+        routes::get_dora_compliance_report,
+        routes::get_nis2_compliance_report,
+        routes::get_vendor_risk_dashboard,
+        routes::get_policy_health_dashboard,
+        routes::get_policy_health_trends,
+        routes::get_approval_queue,
+        routes::get_approval_history,
+        routes::get_rollback_history,
+        routes::create_delegation,
+        routes::list_delegations,
+        routes::revoke_delegation,
+        routes::get_business_function_dashboard,
+        routes::create_or_update_asset,
+        routes::list_assets,
+        routes::get_asset_by_agent,
+        routes::list_business_functions,
+        routes::create_asset_policy,
+        routes::list_asset_policies,
+        routes::get_enforcement_mode,
+        routes::set_enforcement_mode,
+        routes::configure_circuit_breaker,
+        routes::preview_policy_impact,
+        routes::get_policy_health,
+        routes::approve_policy,
+        routes::reject_policy,
+        routes::get_vendor_risk_score,
+        routes::enrich_asset_tprm,
+        routes::auto_generate_tprm_policies,
+        routes::get_executive_assurance,
+        routes::get_compliance_kpis,
+        routes::get_decision_explanation,
+        routes::get_feature_importance,
+        routes::get_model_drift,
+        routes::create_baseline,
+        routes::detect_configuration_drift,
+        routes::get_configuration_drifts,
+        routes::register_cloud_provider,
+        routes::sync_cloud_compliance,
+        routes::get_cloud_compliance_summary,
     ),
     components(schemas(
         routes::LogRequest,
@@ -138,6 +184,85 @@ use routes::*;
         routes::modules::ModulesListResponse,
         routes::modules::EnableModuleRequest,
         routes::modules::ModuleResponse,
+        routes::RollbackRequest,
+        routes::PolicyImpactAnalytics,
+        routes::AgentStats,
+        routes::RiskAssessmentSummary,
+        routes::ShadowModeAnalytics,
+        routes::AgentShadowStats,
+        routes::RegionShadowStats,
+        routes::PolicyShadowStats,
+        routes::TimeRange,
+        routes::CircuitBreakerAnalytics,
+        routes::CircuitBreakerTransition,
+        routes::PolicyCircuitBreakerStatus,
+        routes::CanaryAnalytics,
+        routes::PolicyCanaryStatus,
+        routes::CanaryTransition,
+        routes::TPRMComplianceReport,
+        routes::VendorComplianceInfo,
+        routes::BusinessFunctionDashboard,
+        routes::BusinessFunctionStats,
+        routes::DORAComplianceReport,
+        routes::DORAIncidentReporting,
+        routes::DORAIncident,
+        routes::DORAResilienceTesting,
+        routes::DORATestResult,
+        routes::NIS2ComplianceReport,
+        routes::NIS2ManagementAccountability,
+        routes::NIS2BaselineMeasures,
+        routes::NIS2Measure,
+        routes::NIS2IncidentReporting,
+        routes::PolicyHealthDashboard,
+        routes::PolicyHealthSummary,
+        routes::PolicyHealthTrends,
+        routes::HealthTrendPoint,
+        routes::ApprovalQueueDashboard,
+        routes::PendingApproval,
+        routes::ApprovedPolicy,
+        routes::RejectedPolicy,
+        routes::ApproverInfo,
+        routes::ApprovalHistory,
+        routes::ApprovalHistoryEntry,
+        routes::RollbackHistoryDashboard,
+        routes::RollbackHistoryEntry,
+        routes::CreateDelegationRequest,
+        routes::DelegationResponse,
+        routes::DelegationListResponse,
+        crate::core::policy_simulator::SimulationRequest,
+        crate::core::policy_simulator::SimulationResult,
+        routes::AssetRequest,
+        routes::AssetResponse,
+        routes::AssetsListResponse,
+        routes::AssetDetailResponse,
+        routes::AssetPolicyRequest,
+        routes::AssetPolicyResponse,
+        routes::EnforcementModeResponse,
+        routes::SetEnforcementModeRequest,
+        routes::CircuitBreakerConfigRequest,
+        routes::CircuitBreakerConfigResponse,
+        routes::PolicyHealthResponse,
+        routes::PolicyApprovalRequest,
+        routes::PolicyApprovalResponse,
+        routes::PolicyRejectionRequest,
+        routes::VendorRiskScoreResponse,
+        routes::AutoGenerateTPRMPolicyRequest,
+        routes::TPRMPolicyRecommendationsResponse,
+        routes::TPRMPolicyRecommendation,
+        routes::ExecutiveScorecardResponse,
+        routes::ComplianceKPIResponse,
+        routes::AIDecisionExplanationResponse,
+        routes::FeatureImportanceResponse,
+        routes::ModelDriftResponse,
+        routes::CreateBaselineRequest,
+        routes::BaselineResponse,
+        routes::DetectDriftRequest,
+        routes::DriftDetectionResponse,
+        routes::DriftResponse,
+        routes::RegisterCloudProviderRequest,
+        routes::CloudProviderResponse,
+        routes::CloudSyncResponse,
+        routes::CloudComplianceSummaryResponse,
     ))
 )]
 struct ApiDoc;
@@ -342,6 +467,58 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/modules/{name}/status").route(web::get().to(routes::modules::get_module_status)))
                     // Proxy Mode - Network-level compliance enforcement
                     .service(web::resource("/proxy").route(web::post().to(routes::proxy_request)))
+                    // Policy Management - Operational Safety
+                    .service(web::resource("/policies/simulate").route(web::post().to(routes::simulate_policy)))
+                    .service(web::resource("/policies/preview-impact").route(web::get().to(routes::preview_policy_impact)))
+                    .service(web::resource("/policies/compare").route(web::post().to(routes::compare_policies)))
+                    .service(web::resource("/policies/{policy_id}/rollback").route(web::post().to(routes::rollback_policy)))
+                    .service(web::resource("/policies/{policy_id}/health").route(web::get().to(routes::get_policy_health)))
+                    .service(web::resource("/policies/{policy_id}/approve").route(web::post().to(routes::approve_policy)))
+                    .service(web::resource("/policies/{policy_id}/reject").route(web::post().to(routes::reject_policy)))
+                    .service(web::resource("/analytics/policy-impact").route(web::get().to(routes::get_policy_impact_analytics)))
+                    .service(web::resource("/analytics/shadow-mode").route(web::get().to(routes::get_shadow_mode_analytics)))
+                    .service(web::resource("/analytics/circuit-breaker").route(web::get().to(routes::get_circuit_breaker_analytics)))
+                    .service(web::resource("/analytics/canary").route(web::get().to(routes::get_canary_analytics)))
+                    .service(web::resource("/analytics/vendor-risk").route(web::get().to(routes::get_vendor_risk_dashboard)))
+                    .service(web::resource("/analytics/business-functions").route(web::get().to(routes::get_business_function_dashboard)))
+                    .service(web::resource("/analytics/policy-health").route(web::get().to(routes::get_policy_health_dashboard)))
+                    .service(web::resource("/analytics/policy-health/{policy_id}/trends").route(web::get().to(routes::get_policy_health_trends)))
+                    .service(web::resource("/approvals/queue").route(web::get().to(routes::get_approval_queue)))
+                    .service(web::resource("/approvals/{policy_id}/history").route(web::get().to(routes::get_approval_history)))
+                    .service(web::resource("/approvals/delegations").route(web::post().to(routes::create_delegation)).route(web::get().to(routes::list_delegations)))
+                    .service(web::resource("/approvals/delegations/{delegation_id}").route(web::delete().to(routes::revoke_delegation)))
+                    .service(web::resource("/analytics/rollback-history").route(web::get().to(routes::get_rollback_history)))
+                    // Veridion TPRM Integration
+                    .service(web::resource("/vendors/{vendor_domain}/risk-score").route(web::get().to(routes::get_vendor_risk_score)))
+                    .service(web::resource("/assets/{asset_id}/enrich-tprm").route(web::post().to(routes::enrich_asset_tprm)))
+                    .service(web::resource("/policies/auto-generate-from-tprm").route(web::post().to(routes::auto_generate_tprm_policies)))
+                    // Executive Assurance Reporting
+                    .service(web::resource("/reports/executive-assurance").route(web::get().to(routes::get_executive_assurance)))
+                    .service(web::resource("/reports/compliance-kpis").route(web::get().to(routes::get_compliance_kpis)))
+                    .service(web::resource("/reports/tprm-compliance").route(web::get().to(routes::get_tprm_compliance_report)))
+                    .service(web::resource("/reports/dora-compliance").route(web::get().to(routes::get_dora_compliance_report)))
+                    .service(web::resource("/reports/nis2-compliance").route(web::get().to(routes::get_nis2_compliance_report)))
+                    // AI Explainability & Observability
+                    .service(web::resource("/models/{model_id}/explanations/{decision_id}").route(web::get().to(routes::get_decision_explanation)))
+                    .service(web::resource("/models/{model_id}/feature-importance").route(web::get().to(routes::get_feature_importance)))
+                    .service(web::resource("/models/{model_id}/drift").route(web::get().to(routes::get_model_drift)))
+                    // Configuration Drift Detection
+                    .service(web::resource("/configuration/baselines").route(web::post().to(routes::create_baseline)))
+                    .service(web::resource("/configuration/baselines/{baseline_id}/detect-drift").route(web::post().to(routes::detect_configuration_drift)))
+                    .service(web::resource("/configuration/baselines/{baseline_id}/drifts").route(web::get().to(routes::get_configuration_drifts)))
+                    // Multi-Cloud Native Integrations
+                    .service(web::resource("/cloud/providers").route(web::post().to(routes::register_cloud_provider)))
+                    .service(web::resource("/cloud/providers/{provider}/sync").route(web::post().to(routes::sync_cloud_compliance)))
+                    .service(web::resource("/cloud/providers/{provider}/compliance").route(web::get().to(routes::get_cloud_compliance_summary)))
+                    // Asset Management
+                    .service(web::resource("/assets").route(web::post().to(routes::create_or_update_asset)).route(web::get().to(routes::list_assets)))
+                    .service(web::resource("/assets/by-agent/{agent_id}").route(web::get().to(routes::get_asset_by_agent)))
+                    .service(web::resource("/business-functions").route(web::get().to(routes::list_business_functions)))
+                    .service(web::resource("/asset-policies").route(web::post().to(routes::create_asset_policy)).route(web::get().to(routes::list_asset_policies)))
+                    // System Configuration - Shadow Mode
+                    .service(web::resource("/system/enforcement-mode").route(web::get().to(routes::get_enforcement_mode)).route(web::post().to(routes::set_enforcement_mode)))
+                    // Circuit Breaker Configuration
+                    .service(web::resource("/policies/{policy_id}/circuit-breaker/config").route(web::post().to(routes::configure_circuit_breaker)))
             )
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}")

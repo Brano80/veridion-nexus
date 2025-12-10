@@ -17,7 +17,10 @@ async fn authenticate_and_authorize(
     resource: &str,
     action: &str,
 ) -> Result<Claims, HttpResponse> {
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = AuthService::new()
+        .map_err(|e| HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })))?;
     let claims = extract_claims(http_req, &auth_service)?;
 
     let rbac = RbacService::new(db_pool.clone());
@@ -47,6 +50,7 @@ use crate::integration::notifications::NotificationChannel;
 use utoipa::ToSchema;
 use actix_web::http::header::ContentDisposition;
 use std::fs;
+use std::collections::HashMap;
 use chrono::{Local, Utc, DateTime};
 use uuid::Uuid;
 
@@ -335,6 +339,30 @@ pub async fn log_action(
         }
     }
 
+    // 0. CHECK ENFORCEMENT MODE (Shadow Mode Infrastructure)
+    // Get system-wide enforcement mode
+    let system_enforcement_mode: String = sqlx::query_scalar("SELECT get_system_enforcement_mode()")
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or_else(|_| "ENFORCING".to_string());
+    
+    // Check if policy has override
+    let policy_enforcement_mode: Option<String> = sqlx::query_scalar(
+        "SELECT enforcement_mode_override FROM policy_versions 
+         WHERE policy_type = 'SOVEREIGN_LOCK' AND is_active = true 
+         LIMIT 1"
+    )
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+    
+    // Use policy override if available, otherwise system mode
+    let enforcement_mode = policy_enforcement_mode.as_deref()
+        .unwrap_or(&system_enforcement_mode);
+    
+    let is_shadow_mode = enforcement_mode == "SHADOW" || enforcement_mode == "DRY_RUN";
+
     // B. SOVEREIGN LOCK
     // Check for blocked regions (case-insensitive, also catches AWS region patterns like "us-east-1")
     let target = req.target_region.as_deref().unwrap_or("").to_uppercase();
@@ -348,9 +376,127 @@ pub async fn log_action(
         || target == "RUSSIA";
     
     let status = if is_violation { "BLOCKED (SOVEREIGNTY)" } else { "COMPLIANT" };
+    
+    // In shadow mode, log what would happen but don't block
+    if is_shadow_mode && is_violation {
+        // Log to shadow_mode_logs instead of blocking
+        let record_id = uuid::Uuid::new_v4();
+        let log_hash = crate::core::privacy_bridge::hash_payload(&req.payload);
+        let _ = sqlx::query(
+            "INSERT INTO shadow_mode_logs (
+                id, agent_id, action_summary, action_type, payload_hash,
+                target_region, would_block, would_allow, policy_applied,
+                risk_level, detected_country, timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
+        )
+        .bind(record_id)
+        .bind(&req.agent_id)
+        .bind(&format!("{}: {}", req.agent_id, req.action))
+        .bind(&req.action)
+        .bind(&log_hash)
+        .bind(&target)
+        .bind(true)  // would_block
+        .bind(false) // would_allow
+        .bind("SOVEREIGN_LOCK")
+        .bind("HIGH")
+        .bind(&target)
+        .bind(chrono::Utc::now())
+        .execute(&data.db_pool)
+        .await;
+        
+        log::warn!("SHADOW MODE: Would block {} -> {} (Country: {})", req.agent_id, req.action, target);
+        
+        // Send shadow mode alert (async, don't block)
+        let notification_service = crate::integration::notifications::NotificationService::new();
+        let agent_id_clone = req.agent_id.clone();
+        let action_clone = req.action.clone();
+        let target_clone = target.clone();
+        let db_pool_clone = data.db_pool.clone();
+        tokio::spawn(async move {
+            let _ = notification_service.send_shadow_mode_alert(
+                &db_pool_clone,
+                &agent_id_clone,
+                &action_clone,
+                &target_clone,
+                "SOVEREIGN_LOCK",
+                None, // Will use system user
+            ).await;
+        });
+        
+        // Continue processing - don't block in shadow mode
+    } else if is_shadow_mode && !is_violation {
+        // Log allowed actions in shadow mode too
+        let record_id = uuid::Uuid::new_v4();
+        let log_hash = crate::core::privacy_bridge::hash_payload(&req.payload);
+        let _ = sqlx::query(
+            "INSERT INTO shadow_mode_logs (
+                id, agent_id, action_summary, action_type, payload_hash,
+                target_region, would_block, would_allow, policy_applied,
+                risk_level, detected_country, timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
+        )
+        .bind(record_id)
+        .bind(&req.agent_id)
+        .bind(&format!("{}: {}", req.agent_id, req.action))
+        .bind(&req.action)
+        .bind(&log_hash)
+        .bind(&target)
+        .bind(false) // would_block
+        .bind(true)  // would_allow
+        .bind("SOVEREIGN_LOCK")
+        .bind("LOW")
+        .bind(&target)
+        .bind(chrono::Utc::now())
+        .execute(&data.db_pool)
+        .await;
+    }
+    
+    // If in shadow mode and violation, skip blocking but continue logging
+    if is_shadow_mode && is_violation {
+        // Don't return early - continue to log but mark as shadow mode
+        // We'll handle this after risk assessment
+    }
+
+    // C. ASSET-BASED POLICY ENGINE
+    // Get asset context (business function, location, risk profile) from agent_id
+    let asset_context = crate::core::asset_policy_engine::AssetPolicyEngine::get_asset_context_from_agent(
+        &data.db_pool,
+        &req.agent_id,
+    ).await.ok().flatten();
+
+    // If asset not found, try to infer business function from action
+    let business_function = if let Some(ctx) = &asset_context {
+        ctx.business_function.clone()
+    } else {
+        crate::core::asset_policy_engine::AssetPolicyEngine::infer_business_function_from_action(&req.action)
+    };
+
+    // Get applicable asset-based policies
+    let asset_policies = if let Some(ctx) = &asset_context {
+        crate::core::asset_policy_engine::AssetPolicyEngine::get_applicable_policies(
+            &data.db_pool,
+            ctx,
+        ).await.ok().unwrap_or_default()
+    } else if let Some(bf) = &business_function {
+        // Create temporary context from inferred business function
+        let temp_context = crate::core::asset_policy_engine::AssetContext {
+            asset_id: None,
+            business_function: Some(bf.clone()),
+            department: None,
+            location: req.target_region.clone(),
+            risk_profile: None,
+            tags: None,
+        };
+        crate::core::asset_policy_engine::AssetPolicyEngine::get_applicable_policies(
+            &data.db_pool,
+            &temp_context,
+        ).await.ok().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     // C. RISK ASSESSMENT (EU AI Act Article 9)
-    // Enhanced risk assessment using context-aware methodology
+    // Enhanced risk assessment using context-aware methodology (now with business function context)
     let risk_assessment_result = crate::core::risk_assessment::RiskAssessmentService::assess_risk(
         &data.db_pool,
         &req.action,
@@ -656,7 +802,8 @@ pub async fn log_action(
     });
     trigger_webhook_event(&data.db_pool, "compliance.action", webhook_data).await;
 
-    if is_violation {
+    // In shadow mode, never block - always return OK but mark status appropriately
+    if is_violation && !is_shadow_mode {
         HttpResponse::Forbidden().json(LogResponse {
             status: status.to_string(),
             seal_id: "N/A (Connection Refused)".to_string(),
@@ -665,9 +812,20 @@ pub async fn log_action(
             human_oversight_status,
         })
     } else {
+        // Shadow mode: return OK even if violation (already logged to shadow_mode_logs)
+        let final_status = if is_shadow_mode && is_violation {
+            format!("SHADOW_MODE: {}", status)
+        } else {
+            status.to_string()
+        };
+        
         HttpResponse::Ok().json(LogResponse {
-            status: status.to_string(),
-            seal_id,
+            status: final_status,
+            seal_id: if is_shadow_mode && is_violation { 
+                format!("SHADOW-{}", seal_id) 
+            } else { 
+                seal_id 
+            },
             tx_id: encrypted_log.log_id,
             risk_level: Some(risk_level),
             human_oversight_status,
@@ -1114,24 +1272,24 @@ pub async fn download_report(
                 }
                 _ => {
                     // Default: Annex IV report
-                    let filename = format!("Veridion_Annex_IV_{}.{}", 
-                        chrono::Utc::now().format("%Y%m%d_%H%M%S"),
-                        format.file_extension()
-                    );
-                    let temp_file = format!("temp_report_{}.{}", 
-                        uuid::Uuid::new_v4().to_string().replace("-", ""),
-                        format.file_extension()
-                    );
-                    
+            let filename = format!("Veridion_Annex_IV_{}.{}", 
+                chrono::Utc::now().format("%Y%m%d_%H%M%S"),
+                format.file_extension()
+            );
+            let temp_file = format!("temp_report_{}.{}", 
+                uuid::Uuid::new_v4().to_string().replace("-", ""),
+                format.file_extension()
+            );
+            
                     let result = match format {
-                        crate::core::annex_iv::ExportFormat::Pdf => {
-                            crate::core::annex_iv::generate_report(&compliance_records, &temp_file)
-                        }
-                        crate::core::annex_iv::ExportFormat::Json => {
-                            crate::core::annex_iv::export_to_json(&compliance_records, &temp_file)
-                        }
-                        crate::core::annex_iv::ExportFormat::Xml => {
-                            crate::core::annex_iv::export_to_xml(&compliance_records, &temp_file)
+                crate::core::annex_iv::ExportFormat::Pdf => {
+                    crate::core::annex_iv::generate_report(&compliance_records, &temp_file)
+                }
+                crate::core::annex_iv::ExportFormat::Json => {
+                    crate::core::annex_iv::export_to_json(&compliance_records, &temp_file)
+                }
+                crate::core::annex_iv::ExportFormat::Xml => {
+                    crate::core::annex_iv::export_to_xml(&compliance_records, &temp_file)
                         }
                     };
                     (filename, temp_file, result)
@@ -3840,7 +3998,14 @@ pub async fn execute_retention_deletions(
     http_req: HttpRequest,
 ) -> impl Responder {
     // AUTHENTICATION & AUTHORIZATION - Critical: admin only
-    let auth_service = AuthService::new().unwrap();
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => {
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to initialize auth service: {}", e)
+            }));
+        }
+    };
     let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
@@ -6036,10 +6201,123 @@ pub async fn proxy_request(
     let proxy_req = body.into_inner();
     let proxy_service = ProxyService::new();
 
+    // 0. Check policy state (test mode, rollout percentage, circuit breaker)
+    #[derive(sqlx::FromRow)]
+    struct PolicyState {
+        id: uuid::Uuid,
+        is_test_mode: bool,
+        rollout_percentage: i32,
+        circuit_breaker_enabled: bool,
+        circuit_breaker_state: Option<String>,
+        circuit_breaker_error_threshold: Option<f64>,
+    }
+    
+    let policy_state: Option<PolicyState> = sqlx::query_as(
+        "SELECT id, COALESCE(is_test_mode, false) as is_test_mode, 
+                COALESCE(rollout_percentage, 100) as rollout_percentage,
+                COALESCE(circuit_breaker_enabled, false) as circuit_breaker_enabled,
+                circuit_breaker_state,
+                circuit_breaker_error_threshold
+         FROM policy_versions 
+         WHERE policy_type = 'SOVEREIGN_LOCK' AND is_active = true 
+         LIMIT 1"
+    )
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+    
+    let is_test_mode = policy_state.as_ref().map(|p| p.is_test_mode).unwrap_or(false);
+    let rollout_percentage = policy_state.as_ref().map(|p| p.rollout_percentage).unwrap_or(100);
+    let circuit_breaker_enabled = policy_state.as_ref().map(|p| p.circuit_breaker_enabled).unwrap_or(false);
+    let circuit_breaker_state = policy_state.as_ref()
+        .and_then(|p| p.circuit_breaker_state.as_ref())
+        .map(|s| s.as_str())
+        .unwrap_or("CLOSED");
+    let policy_version_id = policy_state.as_ref().map(|p| p.id);
+    
+    // Check circuit breaker state - if OPEN, skip policy enforcement
+    if circuit_breaker_enabled && circuit_breaker_state == "OPEN" {
+        log::warn!("CIRCUIT BREAKER OPEN: Skipping policy enforcement for {}", proxy_req.target_url);
+        // Track this as a bypass (not an error, but a circuit breaker bypass)
+        if let Some(pv_id) = policy_version_id {
+            let _ = sqlx::query(
+                "INSERT INTO policy_error_tracking (
+                    policy_version_id, policy_type, error_type, 
+                    error_count, total_requests, error_rate, 
+                    window_start, window_end
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT DO NOTHING"
+            )
+            .bind(pv_id)
+            .bind("SOVEREIGN_LOCK")
+            .bind("CIRCUIT_BYPASS")
+            .bind(0) // Not an error, just bypass
+            .bind(1) // Total request
+            .bind(0.0) // Error rate
+            .bind(chrono::Utc::now())
+            .bind(chrono::Utc::now())
+            .execute(&data.db_pool)
+            .await;
+        }
+        // Continue without policy enforcement
+    }
+    
+    // Check if this request should be subject to policy (gradual rollout)
+    let should_apply_policy = if rollout_percentage < 100 {
+        // Use agent_id as deterministic seed for rollout
+        let agent_id = req.headers()
+            .get("X-Agent-ID")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("unknown");
+        // Simple hash-based rollout (consistent per agent)
+        let hash = agent_id.chars().map(|c| c as u32).sum::<u32>();
+        (hash % 100) < (rollout_percentage as u32)
+    } else {
+        true // 100% rollout - apply to all
+    };
+
     // 1. Check data sovereignty BEFORE forwarding
     let detected_country = match proxy_service.check_sovereignty(&proxy_req.target_url).await {
         Ok((is_eu, country)) => {
             if !is_eu {
+                // Skip policy enforcement if not in rollout percentage
+                if !should_apply_policy {
+                    log::debug!("ROLLOUT: Skipping policy for {} (rollout: {}%)", proxy_req.target_url, rollout_percentage);
+                    // Continue to forward - not in rollout yet, return country and proceed
+                } else if is_test_mode {
+                    log::warn!("TEST MODE: Would block {} -> {} (Country: {})", proxy_req.target_url, country, country);
+                    // Log test mode action but continue
+                    let agent_id = req.headers()
+                        .get("X-Agent-ID")
+                        .and_then(|h| h.to_str().ok())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    
+                    let record_id = uuid::Uuid::new_v4();
+                    let seal_id = uuid::Uuid::new_v4().to_string();
+                    let tx_id = uuid::Uuid::new_v4().to_string();
+                    let action_summary = format!("TEST_MODE: Would block {} ({})", proxy_req.target_url, country);
+                    let _ = sqlx::query(
+                        "INSERT INTO compliance_records (
+                            id, seal_id, tx_id, agent_id, action_summary, status, 
+                            risk_level, timestamp, payload_hash
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                    )
+                    .bind(record_id)
+                    .bind(&seal_id)
+                    .bind(&tx_id)
+                    .bind(&agent_id)
+                    .bind(&action_summary)
+                    .bind("TEST_MODE (WOULD_BLOCK)")
+                    .bind("HIGH")
+                    .bind(chrono::Utc::now())
+                    .bind(&format!("region:{}", country))
+                    .execute(&data.db_pool)
+                    .await;
+                    // Continue to forward in test mode - return country and proceed
+                    // Note: This is inside a match arm, so we just continue to the end
+                } else {
                 // Log the violation attempt
                 let agent_id = req.headers()
                     .get("X-Agent-ID")
@@ -6047,8 +6325,9 @@ pub async fn proxy_request(
                     .unwrap_or("unknown")
                     .to_string();
                 
-                let user_id = extract_claims(&req, &crate::security::AuthService::new().unwrap())
+                let user_id = crate::security::AuthService::new()
                     .ok()
+                    .and_then(|auth_service| extract_claims(&req, &auth_service).ok())
                     .map(|c| c.sub);
 
                 // Log compliance action
@@ -6076,6 +6355,253 @@ pub async fn proxy_request(
                 .await {
                     log::error!("Failed to log proxy block: {}", e);
                 }
+                
+                // Track error for circuit breaker (if enabled)
+                if let Some(pv_id) = policy_version_id {
+                    let now = chrono::Utc::now();
+                    let window_start = now - chrono::Duration::minutes(5);
+                    
+                    // Update error tracking
+                    let _ = sqlx::query(
+                        "INSERT INTO policy_error_tracking (
+                            policy_version_id, policy_type, error_type,
+                            error_count, total_requests, error_rate,
+                            window_start, window_end
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT DO UPDATE SET
+                            error_count = policy_error_tracking.error_count + 1,
+                            total_requests = policy_error_tracking.total_requests + 1,
+                            error_rate = ((policy_error_tracking.error_count + 1)::DECIMAL / 
+                                         (policy_error_tracking.total_requests + 1)::DECIMAL) * 100.0,
+                            updated_at = CURRENT_TIMESTAMP"
+                    )
+                    .bind(pv_id)
+                    .bind("SOVEREIGN_LOCK")
+                    .bind("BLOCKED")
+                    .bind(1)
+                    .bind(1)
+                    .bind(100.0) // 100% error rate for blocked requests
+                    .bind(window_start)
+                    .bind(now)
+                    .execute(&data.db_pool)
+                    .await;
+                    
+                    // Check if circuit breaker should open
+                    let should_open: Option<bool> = sqlx::query_scalar(
+                        "SELECT should_open_circuit_breaker($1)"
+                    )
+                    .bind(pv_id)
+                    .fetch_optional(&data.db_pool)
+                    .await
+                    .ok()
+                    .flatten();
+                    
+                    if should_open.unwrap_or(false) {
+                        // Open circuit breaker
+                        let _ = sqlx::query(
+                            "UPDATE policy_versions 
+                             SET circuit_breaker_state = 'OPEN',
+                                 circuit_breaker_opened_at = CURRENT_TIMESTAMP,
+                                 circuit_breaker_last_error_at = CURRENT_TIMESTAMP
+                             WHERE id = $1"
+                        )
+                        .bind(pv_id)
+                        .execute(&data.db_pool)
+                        .await;
+                        
+                        // Log circuit breaker history
+                        let _ = sqlx::query(
+                            "INSERT INTO circuit_breaker_history (
+                                policy_version_id, state_transition, error_rate,
+                                error_count, total_requests, triggered_by, notes
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+                        )
+                        .bind(pv_id)
+                        .bind("OPENED")
+                        .bind(100.0)
+                        .bind(1)
+                        .bind(1)
+                        .bind("THRESHOLD")
+                        .bind(format!("Auto-opened due to error rate threshold"))
+                        .execute(&data.db_pool)
+                        .await;
+                        
+                        log::error!("CIRCUIT BREAKER OPENED: Policy {} exceeded error threshold", pv_id);
+                        
+                        // Send circuit breaker alert
+                        let notification_service = crate::integration::notifications::NotificationService::new();
+                        let policy_id_str = pv_id.to_string();
+                        let db_pool_clone = data.db_pool.clone();
+                        tokio::spawn(async move {
+                            let _ = notification_service.send_circuit_breaker_alert(
+                                &db_pool_clone,
+                                &policy_id_str,
+                                "SOVEREIGN_LOCK",
+                                100.0,
+                                1,
+                                1,
+                                None,
+                            ).await;
+                        });
+                    }
+                    
+                    // Track canary metrics for blocked requests
+                    let rollout_pct = rollout_percentage;
+                    let now = chrono::Utc::now();
+                    let window_start = now - chrono::Duration::minutes(10);
+                    
+                    let _ = sqlx::query(
+                        "INSERT INTO canary_metrics (
+                            policy_version_id, traffic_percentage, total_requests,
+                            successful_requests, failed_requests, blocked_requests,
+                            success_rate, window_start, window_end
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        ON CONFLICT (policy_version_id, traffic_percentage, window_start) 
+                        DO UPDATE SET
+                            total_requests = canary_metrics.total_requests + 1,
+                            blocked_requests = canary_metrics.blocked_requests + 1,
+                            success_rate = (canary_metrics.successful_requests::DECIMAL / 
+                                           (canary_metrics.total_requests + 1)::DECIMAL) * 100.0,
+                            updated_at = CURRENT_TIMESTAMP"
+                    )
+                    .bind(pv_id)
+                    .bind(rollout_pct)
+                    .bind(1)
+                    .bind(0)
+                    .bind(0)
+                    .bind(1)
+                    .bind(0.0)
+                    .bind(window_start)
+                    .bind(now)
+                    .execute(&data.db_pool)
+                    .await;
+                    
+                    // Check if should auto-rollback
+                    let should_rollback: Option<bool> = sqlx::query_scalar(
+                        "SELECT should_rollback_canary($1)"
+                    )
+                    .bind(pv_id)
+                    .fetch_optional(&data.db_pool)
+                    .await
+                    .ok()
+                    .flatten();
+                    
+                    if should_rollback.unwrap_or(false) {
+                        // Auto-rollback to previous percentage tier
+                        let prev_percentage = match rollout_pct {
+                            100 => 50,
+                            50 => 25,
+                            25 => 10,
+                            10 => 5,
+                            5 => 1,
+                            _ => 0,
+                        };
+                        
+                        let success_rate: Option<f64> = sqlx::query_scalar(
+                            "SELECT calculate_canary_success_rate($1, $2, 10)"
+                        )
+                        .bind(pv_id)
+                        .bind(rollout_pct)
+                        .fetch_optional(&data.db_pool)
+                        .await
+                        .ok()
+                        .flatten();
+                        
+                        let _ = sqlx::query(
+                            "UPDATE policy_versions 
+                             SET rollout_percentage = $1
+                             WHERE id = $2"
+                        )
+                        .bind(prev_percentage)
+                        .bind(pv_id)
+                        .execute(&data.db_pool)
+                        .await;
+                        
+                        // Log rollback
+                        let _ = sqlx::query(
+                            "INSERT INTO canary_deployment_history (
+                                policy_version_id, action, from_percentage, to_percentage,
+                                success_rate, triggered_by, notes
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+                        )
+                        .bind(pv_id)
+                        .bind("ROLLED_BACK")
+                        .bind(rollout_pct)
+                        .bind(prev_percentage)
+                        .bind(success_rate.unwrap_or(0.0))
+                        .bind("AUTO")
+                        .bind(format!("Auto-rolled back from {}% to {}% due to high failure rate", rollout_pct, prev_percentage))
+                        .execute(&data.db_pool)
+                        .await;
+                        
+                        log::warn!("CANARY AUTO-ROLLBACK: Policy {} from {}% to {}%", pv_id, rollout_pct, prev_percentage);
+                        
+                        // Send rollback notification
+                        let notification_service = crate::integration::notifications::NotificationService::new();
+                        let policy_name: Option<String> = sqlx::query_scalar(
+                            "SELECT policy_name FROM policy_versions WHERE id = $1"
+                        )
+                        .bind(pv_id)
+                        .fetch_optional(&data.db_pool)
+                        .await
+                        .ok()
+                        .flatten();
+                        
+                        let policy_creator: Option<String> = sqlx::query_scalar(
+                            "SELECT created_by FROM policy_versions WHERE id = $1"
+                        )
+                        .bind(pv_id)
+                        .fetch_optional(&data.db_pool)
+                        .await
+                        .ok()
+                        .flatten();
+                        
+                        let policy_name_str = policy_name.clone().unwrap_or_else(|| "Unknown Policy".to_string());
+                        let policy_name_for_webhook = policy_name_str.clone();
+                        
+                        if let Some(creator) = policy_creator {
+                            let db_pool_clone = data.db_pool.clone();
+                            let success_rate_val = success_rate.unwrap_or(0.0);
+                            tokio::spawn(async move {
+                                let request = crate::integration::notifications::NotificationRequest {
+                                    user_id: creator,
+                                    notification_type: crate::integration::notifications::NotificationType::HighRiskAiAction,
+                                    channel: crate::integration::notifications::NotificationChannel::Email,
+                                    subject: Some("Policy Auto-Rollback Alert".to_string()),
+                                    body: format!(
+                                        "A policy has been automatically rolled back due to high failure rate.\n\n\
+                                        Policy: {}\n\
+                                        Rolled back from: {}% to {}%\n\
+                                        Success Rate: {:.1}%\n\
+                                        Reason: Success rate below threshold\n\n\
+                                        Please review the policy configuration and metrics before attempting to redeploy.",
+                                        policy_name_str, rollout_pct, prev_percentage, success_rate_val
+                                    ),
+                                    language: Some("en".to_string()),
+                                    related_entity_type: Some("POLICY".to_string()),
+                                    related_entity_id: Some(pv_id.to_string()),
+                                };
+                                let _ = notification_service.send_notification(&db_pool_clone, request).await;
+                            });
+                        }
+                        
+                        // Trigger webhook event
+                        let success_rate_for_webhook = success_rate;
+                        let db_pool_for_webhook = data.db_pool.clone();
+                        tokio::spawn(async move {
+                            let webhook_data = serde_json::json!({
+                                "policy_id": pv_id,
+                                "policy_name": policy_name_for_webhook,
+                                "action": "AUTO_ROLLBACK",
+                                "from_percentage": rollout_pct,
+                                "to_percentage": prev_percentage,
+                                "success_rate": success_rate_for_webhook,
+                                "reason": "High failure rate detected"
+                            });
+                            trigger_webhook_event(&db_pool_for_webhook, "policy.rollback.auto", webhook_data).await;
+                        });
+                    }
+                }
 
                 return HttpResponse::Forbidden().json(serde_json::json!({
                     "error": "SOVEREIGN_LOCK_VIOLATION",
@@ -6084,6 +6610,7 @@ pub async fn proxy_request(
                     "detected_country": country,
                     "status": "BLOCKED"
                 }));
+                }
             }
             // Store the detected country for logging allowed requests
             Some(country)
@@ -6099,8 +6626,9 @@ pub async fn proxy_request(
                 .unwrap_or("unknown")
                 .to_string();
             
-            let user_id = extract_claims(&req, &crate::security::AuthService::new().unwrap())
+            let user_id = crate::security::AuthService::new()
                 .ok()
+                .and_then(|auth_service| extract_claims(&req, &auth_service).ok())
                 .map(|c| c.sub);
             
             // Log compliance action
@@ -6171,6 +6699,101 @@ pub async fn proxy_request(
                 let seal_id = uuid::Uuid::new_v4().to_string();
                 let tx_id = uuid::Uuid::new_v4().to_string();
                 let action_summary = format!("PROXY_ALLOWED: {} ({})", target_url, country_for_log);
+                
+                // Track canary metrics (if policy has rollout_percentage)
+                if let Some(pv_id) = policy_version_id {
+                    let rollout_pct = rollout_percentage;
+                    let now = chrono::Utc::now();
+                    let window_start = now - chrono::Duration::minutes(10);
+                    
+                    let _ = sqlx::query(
+                        "INSERT INTO canary_metrics (
+                            policy_version_id, traffic_percentage, total_requests,
+                            successful_requests, failed_requests, blocked_requests,
+                            success_rate, window_start, window_end
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        ON CONFLICT (policy_version_id, traffic_percentage, window_start) 
+                        DO UPDATE SET
+                            total_requests = canary_metrics.total_requests + 1,
+                            successful_requests = canary_metrics.successful_requests + 1,
+                            success_rate = ((canary_metrics.successful_requests + 1)::DECIMAL / 
+                                           (canary_metrics.total_requests + 1)::DECIMAL) * 100.0,
+                            updated_at = CURRENT_TIMESTAMP"
+                    )
+                    .bind(pv_id)
+                    .bind(rollout_pct)
+                    .bind(1)
+                    .bind(1)
+                    .bind(0)
+                    .bind(0)
+                    .bind(100.0)
+                    .bind(window_start)
+                    .bind(now)
+                    .execute(&db_pool)
+                    .await;
+                    
+                    // Check if should auto-promote
+                    let should_promote: Option<bool> = sqlx::query_scalar(
+                        "SELECT should_promote_canary($1)"
+                    )
+                    .bind(pv_id)
+                    .fetch_optional(&db_pool)
+                    .await
+                    .ok()
+                    .flatten();
+                    
+                    if should_promote.unwrap_or(false) {
+                        // Auto-promote to next percentage tier
+                        let next_percentage = match rollout_pct {
+                            1 => 5,
+                            5 => 10,
+                            10 => 25,
+                            25 => 50,
+                            50 => 100,
+                            _ => 100,
+                        };
+                        
+                        let success_rate: Option<f64> = sqlx::query_scalar(
+                            "SELECT calculate_canary_success_rate($1, $2, 10)"
+                        )
+                        .bind(pv_id)
+                        .bind(rollout_pct)
+                        .fetch_optional(&db_pool)
+                        .await
+                        .ok()
+                        .flatten();
+                        
+                        let _ = sqlx::query(
+                            "UPDATE policy_versions 
+                             SET rollout_percentage = $1
+                             WHERE id = $2"
+                        )
+                        .bind(next_percentage)
+                        .bind(pv_id)
+                        .execute(&db_pool)
+                        .await;
+                        
+                        // Log promotion
+                        let _ = sqlx::query(
+                            "INSERT INTO canary_deployment_history (
+                                policy_version_id, action, from_percentage, to_percentage,
+                                success_rate, triggered_by, notes
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+                        )
+                        .bind(pv_id)
+                        .bind("PROMOTED")
+                        .bind(rollout_pct)
+                        .bind(next_percentage)
+                        .bind(success_rate.unwrap_or(0.0))
+                        .bind("AUTO")
+                        .bind(format!("Auto-promoted from {}% to {}% based on success rate", rollout_pct, next_percentage))
+                        .execute(&db_pool)
+                        .await;
+                        
+                        log::info!("CANARY AUTO-PROMOTED: Policy {} from {}% to {}%", pv_id, rollout_pct, next_percentage);
+                    }
+                }
+                
                 if let Err(e) = sqlx::query(
                     "INSERT INTO compliance_records (
                         id, seal_id, tx_id, agent_id, action_summary, status, 
@@ -6205,7 +6828,7 @@ pub async fn proxy_request(
                 }
             }
 
-            http_response.body(body_bytes)
+            http_response.body(body_bytes.to_vec())
         }
         Err(e) => {
             let request_id = generate_request_id();
@@ -6216,5 +6839,6283 @@ pub async fn proxy_request(
                 "request_id": request_id
             }))
         }
+    }
+}
+
+// ========== POLICY SIMULATION & OPERATIONAL SAFETY ==========
+
+/// Simulate policy change impact before enforcement
+#[utoipa::path(
+    post,
+    path = "/policies/simulate",
+    tag = "Policy Management",
+    request_body = SimulationRequest,
+    responses(
+        (status = 200, description = "Simulation result", body = SimulationResult),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn simulate_policy(
+    req: web::Json<crate::core::policy_simulator::SimulationRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    // Run simulation
+    match crate::core::policy_simulator::PolicySimulator::simulate(
+        &data.db_pool,
+        req.into_inner(),
+    )
+    .await
+    {
+        Ok(result) => {
+            // Cache the result
+            let _ = sqlx::query(
+                "INSERT INTO policy_simulation_results (policy_type, policy_config, simulation_result, time_range_days, simulated_by)
+                 VALUES ($1, $2, $3, $4, $5)"
+            )
+            .bind(format!("{:?}", result.policy_type))
+            .bind(serde_json::json!({}))
+            .bind(serde_json::to_value(&result).unwrap_or(serde_json::Value::Null))
+            .bind(result.total_requests)
+            .bind(&claims.sub)
+            .execute(&data.db_pool)
+            .await;
+
+            HttpResponse::Ok().json(result)
+        }
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "SIMULATION_FAILED",
+            "message": e
+        }))
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct RollbackRequest {
+    #[schema(example = 3)]
+    pub target_version: Option<i32>,
+    #[schema(example = "Reverting due to production issues")]
+    pub notes: Option<String>,
+}
+
+/// Rollback a policy to a previous version
+#[utoipa::path(
+    post,
+    path = "/policies/{policy_id}/rollback",
+    tag = "Policy Management",
+    params(
+        ("policy_id" = String, Path, description = "Policy version ID to rollback to")
+    ),
+    request_body = RollbackRequest,
+    responses(
+        (status = 200, description = "Policy rolled back successfully"),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Policy not found"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn rollback_policy(
+    path: web::Path<String>,
+    req: web::Json<RollbackRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id = path.into_inner();
+    let rollback_req = req.into_inner();
+
+    // Get current active policy
+    let current_policy: Option<(String, i32)> = sqlx::query_as(
+        "SELECT policy_type, version_number FROM policy_versions WHERE id = $1 AND is_active = true"
+    )
+    .bind(&policy_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    if current_policy.is_none() {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "POLICY_NOT_FOUND",
+            "message": "Active policy not found"
+        }));
+    }
+
+    let (policy_type, _current_version) = current_policy.unwrap();
+
+    // Get target version (or previous version if not specified)
+    let target_version = if let Some(version) = rollback_req.target_version {
+        version
+    } else {
+        // Get previous version
+        sqlx::query_scalar::<_, i32>(
+            "SELECT MAX(version_number) FROM policy_versions 
+             WHERE policy_type = $1 AND version_number < (SELECT version_number FROM policy_versions WHERE id = $2)"
+        )
+        .bind(&policy_type)
+        .bind(&policy_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(1)
+    };
+
+    // Deactivate current policy
+    let _ = sqlx::query(
+        "UPDATE policy_versions SET is_active = false, deactivated_at = CURRENT_TIMESTAMP WHERE id = $1"
+    )
+    .bind(&policy_id)
+    .execute(&data.db_pool)
+    .await;
+
+    // Activate target version
+    let result = sqlx::query(
+        "UPDATE policy_versions 
+         SET is_active = true, activated_at = CURRENT_TIMESTAMP 
+         WHERE policy_type = $1 AND version_number = $2
+         RETURNING id"
+    )
+    .bind(&policy_type)
+    .bind(target_version)
+    .fetch_optional(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(Some(row)) => {
+            let new_policy_id: Uuid = row.get(0);
+
+            // Log rollback in history
+            let _ = sqlx::query(
+                "INSERT INTO policy_activation_history (policy_version_id, action, performed_by, previous_version_id, notes)
+                 VALUES ($1, 'ROLLED_BACK', $2, $3, $4)"
+            )
+            .bind(new_policy_id)
+            .bind(&claims.sub)
+            .bind(Uuid::parse_str(&policy_id).ok())
+            .bind(rollback_req.notes)
+            .execute(&data.db_pool)
+            .await;
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "status": "SUCCESS",
+                "message": format!("Policy rolled back to version {}", target_version),
+                "new_policy_id": new_policy_id,
+                "previous_policy_id": policy_id
+            }))
+        }
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "TARGET_VERSION_NOT_FOUND",
+            "message": format!("Version {} not found for policy type {}", target_version, policy_type)
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "ROLLBACK_FAILED",
+            "message": format!("Database error: {}", e)
+        }))
+    }
+}
+
+/// Get policy impact analytics
+#[derive(Serialize, ToSchema)]
+pub struct PolicyImpactAnalytics {
+    pub total_requests: i64,
+    pub requests_by_country: HashMap<String, i64>,
+    pub requests_by_agent: HashMap<String, AgentStats>,
+    pub requests_by_endpoint: HashMap<String, i64>,
+    pub risk_assessment: RiskAssessmentSummary,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AgentStats {
+    pub total: i64,
+    pub by_country: HashMap<String, i64>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RiskAssessmentSummary {
+    pub critical_agents: Vec<String>,
+    pub partial_impact: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/analytics/policy-impact",
+    tag = "Policy Management",
+    responses(
+        (status = 200, description = "Policy impact analytics", body = PolicyImpactAnalytics),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_policy_impact_analytics(
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "analytics", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let time_range = query.get("time_range").and_then(|s| s.parse::<i64>().ok()).unwrap_or(30);
+    let start_time = Utc::now() - chrono::Duration::days(time_range);
+
+    // Get compliance records
+    #[derive(sqlx::FromRow)]
+    struct Record {
+        agent_id: String,
+        action_summary: String,
+        payload_hash: String,
+    }
+
+    let records: Vec<Record> = sqlx::query_as(
+        "SELECT agent_id, action_summary, payload_hash 
+         FROM compliance_records 
+         WHERE timestamp >= $1"
+    )
+    .bind(start_time)
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let mut requests_by_country: HashMap<String, i64> = HashMap::new();
+    let mut requests_by_agent: HashMap<String, AgentStats> = HashMap::new();
+    let mut requests_by_endpoint: HashMap<String, i64> = HashMap::new();
+
+    for record in &records {
+        // Extract region
+        let region = record.payload_hash
+            .strip_prefix("region:")
+            .map(|s| s.to_uppercase())
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        // Extract endpoint - need to make extract_endpoint public or use a helper
+        let endpoint = if let Some(url_start) = record.action_summary.find("http") {
+            let url_part = &record.action_summary[url_start..];
+            let url_end = url_part
+                .find(' ')
+                .or_else(|| url_part.find('\n'))
+                .unwrap_or(url_part.len());
+            let url = &url_part[..url_end];
+            
+            if let Some(proto_end) = url.find("://") {
+                let after_proto = &url[proto_end + 3..];
+                if let Some(host_end) = after_proto.find('/') {
+                    after_proto[..host_end].to_string()
+                } else {
+                    after_proto.to_string()
+                }
+            } else {
+                "unknown".to_string()
+            }
+        } else {
+            "unknown".to_string()
+        };
+
+        *requests_by_country.entry(region.clone()).or_insert(0) += 1;
+        *requests_by_endpoint.entry(endpoint).or_insert(0) += 1;
+
+        let agent_stats = requests_by_agent.entry(record.agent_id.clone()).or_insert_with(|| AgentStats {
+            total: 0,
+            by_country: HashMap::new(),
+        });
+        agent_stats.total += 1;
+        *agent_stats.by_country.entry(region).or_insert(0) += 1;
+    }
+
+    // Identify critical agents (those with >50% US/CN/RU traffic)
+    let mut critical_agents = Vec::new();
+    let mut partial_impact = Vec::new();
+
+    for (agent_id, stats) in &requests_by_agent {
+        let blocked_countries: i64 = ["US", "CN", "RU"]
+            .iter()
+            .map(|country| stats.by_country.get(*country).copied().unwrap_or(0))
+            .sum();
+
+        let block_percentage = if stats.total > 0 {
+            (blocked_countries as f64 / stats.total as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        if block_percentage >= 50.0 {
+            critical_agents.push(agent_id.clone());
+        } else if block_percentage > 0.0 {
+            partial_impact.push(agent_id.clone());
+        }
+    }
+
+    HttpResponse::Ok().json(PolicyImpactAnalytics {
+        total_requests: records.len() as i64,
+        requests_by_country,
+        requests_by_agent,
+        requests_by_endpoint,
+        risk_assessment: RiskAssessmentSummary {
+            critical_agents,
+            partial_impact,
+        },
+    })
+}
+
+// ========== ASSET REGISTRY & BUSINESS FUNCTION MAPPING ==========
+
+/// Create or update an asset
+#[derive(Deserialize, Serialize, ToSchema)]
+pub struct AssetRequest {
+    #[schema(example = "agent-credit-scoring-001")]
+    pub asset_id: String,
+    #[schema(example = "Credit Scoring AI Agent")]
+    pub asset_name: String,
+    #[schema(example = "AI_AGENT")]
+    pub asset_type: String,
+    #[schema(example = "CREDIT_SCORING")]
+    pub business_function: String,
+    #[schema(example = "RISK_MANAGEMENT")]
+    pub department: Option<String>,
+    #[schema(example = "john.doe@company.com")]
+    pub owner: Option<String>,
+    #[schema(example = "EU")]
+    pub location: Option<String>,
+    #[schema(example = "HIGH")]
+    pub risk_profile: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub tags: Option<Vec<String>>,
+    #[schema(example = "agent-credit-scoring-001")]
+    pub agent_ids: Option<Vec<String>>, // Agent IDs to map to this asset
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AssetResponse {
+    pub id: Uuid,
+    pub asset_id: String,
+    pub asset_name: String,
+    pub business_function: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/assets",
+    tag = "Asset Management",
+    request_body = AssetRequest,
+    responses(
+        (status = 200, description = "Asset created or updated", body = AssetResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn create_or_update_asset(
+    req: web::Json<AssetRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "asset", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let asset_req = req.into_inner();
+    let now = Utc::now();
+
+    // Check if asset exists
+    let existing: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM assets WHERE asset_id = $1"
+    )
+    .bind(&asset_req.asset_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    let asset_uuid = if let Some((id,)) = existing {
+        // Update existing asset
+        let _ = sqlx::query(
+            "UPDATE assets SET
+                asset_name = $1,
+                asset_type = $2,
+                business_function = $3,
+                department = $4,
+                owner = $5,
+                location = $6,
+                risk_profile = COALESCE($7, risk_profile),
+                metadata = COALESCE($8, metadata),
+                tags = COALESCE($9, tags),
+                updated_at = $10,
+                created_by = $11
+             WHERE asset_id = $12"
+        )
+        .bind(&asset_req.asset_name)
+        .bind(&asset_req.asset_type)
+        .bind(&asset_req.business_function)
+        .bind(&asset_req.department)
+        .bind(&asset_req.owner)
+        .bind(&asset_req.location)
+        .bind(asset_req.risk_profile.as_deref())
+        .bind(asset_req.metadata.as_ref().unwrap_or(&serde_json::json!({})))
+        .bind(&asset_req.tags)
+        .bind(now)
+        .bind(&claims.sub)
+        .bind(&asset_req.asset_id)
+        .execute(&data.db_pool)
+        .await;
+
+        id
+    } else {
+        // Create new asset
+        let new_id = Uuid::new_v4();
+        let _ = sqlx::query(
+            "INSERT INTO assets (
+                id, asset_id, asset_name, asset_type, business_function,
+                department, owner, location, risk_profile, metadata, tags,
+                created_at, updated_at, created_by
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"
+        )
+        .bind(new_id)
+        .bind(&asset_req.asset_id)
+        .bind(&asset_req.asset_name)
+        .bind(&asset_req.asset_type)
+        .bind(&asset_req.business_function)
+        .bind(&asset_req.department)
+        .bind(&asset_req.owner)
+        .bind(&asset_req.location)
+        .bind(asset_req.risk_profile.as_deref().unwrap_or("MEDIUM"))
+        .bind(asset_req.metadata.as_ref().unwrap_or(&serde_json::json!({})))
+        .bind(&asset_req.tags)
+        .bind(now)
+        .bind(now)
+        .bind(&claims.sub)
+        .execute(&data.db_pool)
+        .await;
+
+        new_id
+    };
+
+    // Map agent IDs to asset if provided
+    if let Some(agent_ids) = asset_req.agent_ids {
+        for agent_id in agent_ids {
+            let _ = sqlx::query(
+                "INSERT INTO asset_agent_mapping (asset_id, agent_id, mapping_type)
+                 VALUES ($1, $2, 'PRIMARY')
+                 ON CONFLICT (asset_id, agent_id) DO NOTHING"
+            )
+            .bind(asset_uuid)
+            .bind(&agent_id)
+            .execute(&data.db_pool)
+            .await;
+        }
+    }
+
+    // Auto-enrich with TPRM data if vendors are specified in metadata
+    if let Some(metadata) = &asset_req.metadata {
+        if let Some(vendors) = metadata.get("vendors").and_then(|v| v.as_array()) {
+            let api_key = std::env::var("VERIDION_TPRM_API_KEY").ok();
+            
+            // Store vendor mappings
+            for vendor in vendors {
+                if let Some(vendor_domain) = vendor.as_str() {
+                    // Store vendor mapping
+                    let _ = sqlx::query(
+                        "INSERT INTO asset_vendor_mapping (asset_id, vendor_domain)
+                         VALUES ($1, $2)
+                         ON CONFLICT (asset_id, vendor_domain) DO NOTHING"
+                    )
+                    .bind(asset_uuid)
+                    .bind(vendor_domain)
+                    .execute(&data.db_pool)
+                    .await;
+
+                    // Fetch and store risk score (async, don't block response)
+                    let api_key_clone = api_key.clone();
+                    let db_pool_clone = data.db_pool.clone();
+                    let vendor_domain_clone = vendor_domain.to_string();
+                    tokio::spawn(async move {
+                        let tprm_service = crate::integration::veridion_tprm::VeridionTPRMService::new(api_key_clone);
+                        if let Ok(risk_score) = tprm_service.fetch_vendor_risk_score(&vendor_domain_clone).await {
+                            let _ = tprm_service.store_vendor_risk_score(&db_pool_clone, &risk_score).await;
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    HttpResponse::Ok().json(AssetResponse {
+        id: asset_uuid,
+        asset_id: asset_req.asset_id,
+        asset_name: asset_req.asset_name,
+        business_function: asset_req.business_function,
+        created_at: now,
+    })
+}
+
+/// Get all assets
+#[derive(Serialize, ToSchema)]
+pub struct AssetsListResponse {
+    pub assets: Vec<AssetDetailResponse>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AssetDetailResponse {
+    pub id: Uuid,
+    pub asset_id: String,
+    pub asset_name: String,
+    pub asset_type: String,
+    pub business_function: String,
+    pub department: Option<String>,
+    pub owner: Option<String>,
+    pub location: Option<String>,
+    pub risk_profile: String,
+    pub tags: Option<Vec<String>>,
+    pub agent_ids: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/assets",
+    tag = "Asset Management",
+    params(
+        ("business_function" = Option<String>, Query, description = "Filter by business function"),
+        ("department" = Option<String>, Query, description = "Filter by department"),
+        ("risk_profile" = Option<String>, Query, description = "Filter by risk profile"),
+    ),
+    responses(
+        (status = 200, description = "List of assets", body = AssetsListResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 403, description = "Forbidden"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn list_assets(
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "asset", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let business_function = query.get("business_function");
+    let department = query.get("department");
+    let risk_profile = query.get("risk_profile");
+
+    let mut query_builder = sqlx::QueryBuilder::new(
+        "SELECT a.* FROM assets a WHERE a.is_active = true"
+    );
+
+    if let Some(bf) = business_function {
+        query_builder.push(" AND a.business_function = ");
+        query_builder.push_bind(bf);
+    }
+    if let Some(dept) = department {
+        query_builder.push(" AND a.department = ");
+        query_builder.push_bind(dept);
+    }
+    if let Some(rp) = risk_profile {
+        query_builder.push(" AND a.risk_profile = ");
+        query_builder.push_bind(rp);
+    }
+
+    query_builder.push(" ORDER BY a.created_at DESC");
+
+    let assets: Vec<AssetDb> = query_builder
+        .build_query_as()
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+    // Get agent mappings for each asset
+    let mut result = Vec::new();
+    for asset in assets {
+        let agent_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT agent_id FROM asset_agent_mapping WHERE asset_id = $1"
+        )
+        .bind(asset.id)
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+        result.push(AssetDetailResponse {
+            id: asset.id,
+            asset_id: asset.asset_id,
+            asset_name: asset.asset_name,
+            asset_type: asset.asset_type,
+            business_function: asset.business_function,
+            department: asset.department,
+            owner: asset.owner,
+            location: asset.location,
+            risk_profile: asset.risk_profile,
+            tags: asset.tags,
+            agent_ids,
+            created_at: asset.created_at,
+        });
+    }
+
+    HttpResponse::Ok().json(AssetsListResponse { assets: result })
+}
+
+/// Get asset by agent_id
+#[utoipa::path(
+    get,
+    path = "/assets/by-agent/{agent_id}",
+    tag = "Asset Management",
+    params(
+        ("agent_id" = String, Path, description = "Agent ID to lookup")
+    ),
+    responses(
+        (status = 200, description = "Asset found", body = AssetDetailResponse),
+        (status = 404, description = "Asset not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_asset_by_agent(
+    path: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "asset", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let agent_id = path.into_inner();
+
+    // Find asset by agent mapping
+    let asset: Option<AssetDb> = sqlx::query_as(
+        "SELECT a.* FROM assets a
+         JOIN asset_agent_mapping aam ON a.id = aam.asset_id
+         WHERE aam.agent_id = $1 AND a.is_active = true
+         LIMIT 1"
+    )
+    .bind(&agent_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    match asset {
+        Some(asset) => {
+            let agent_ids: Vec<String> = sqlx::query_scalar(
+                "SELECT agent_id FROM asset_agent_mapping WHERE asset_id = $1"
+            )
+            .bind(asset.id)
+            .fetch_all(&data.db_pool)
+            .await
+            .unwrap_or_default();
+
+            HttpResponse::Ok().json(AssetDetailResponse {
+                id: asset.id,
+                asset_id: asset.asset_id,
+                asset_name: asset.asset_name,
+                asset_type: asset.asset_type,
+                business_function: asset.business_function,
+                department: asset.department,
+                owner: asset.owner,
+                location: asset.location,
+                risk_profile: asset.risk_profile,
+                tags: asset.tags,
+                agent_ids,
+                created_at: asset.created_at,
+            })
+        }
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "ASSET_NOT_FOUND",
+            "message": format!("No asset found for agent_id: {}", agent_id)
+        }))
+    }
+}
+
+/// Get business functions
+#[utoipa::path(
+    get,
+    path = "/business-functions",
+    tag = "Asset Management",
+    responses(
+        (status = 200, description = "List of business functions"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn list_business_functions(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "asset", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let functions: Vec<BusinessFunctionDb> = sqlx::query_as(
+        "SELECT * FROM business_functions ORDER BY function_name"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    HttpResponse::Ok().json(functions)
+}
+
+/// Create asset-based policy
+#[derive(Deserialize, Serialize, ToSchema)]
+pub struct AssetPolicyRequest {
+    #[schema(example = "Credit Scoring - EU Only")]
+    pub policy_name: String,
+    #[schema(example = "SOVEREIGN_LOCK")]
+    pub policy_type: String,
+    #[schema(example = "CREDIT_SCORING")]
+    pub business_function_filter: Option<String>,
+    #[schema(example = "RISK_MANAGEMENT")]
+    pub department_filter: Option<String>,
+    #[schema(example = "EU")]
+    pub location_filter: Option<String>,
+    #[schema(example = "HIGH")]
+    pub risk_profile_filter: Option<String>,
+    pub asset_tags_filter: Option<Vec<String>>,
+    pub policy_config: serde_json::Value,
+    #[schema(example = 100)]
+    pub priority: Option<i32>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AssetPolicyResponse {
+    pub id: Uuid,
+    pub policy_name: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/asset-policies",
+    tag = "Asset Management",
+    request_body = AssetPolicyRequest,
+    responses(
+        (status = 200, description = "Asset policy created", body = AssetPolicyResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn create_asset_policy(
+    req: web::Json<AssetPolicyRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "asset", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_req = req.into_inner();
+    let now = Utc::now();
+    let policy_id = Uuid::new_v4();
+
+    let result = sqlx::query(
+        "INSERT INTO asset_policies (
+            id, policy_name, policy_type, business_function_filter,
+            department_filter, location_filter, risk_profile_filter,
+            asset_tags_filter, policy_config, priority, created_at, updated_at, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING id"
+    )
+    .bind(policy_id)
+    .bind(&policy_req.policy_name)
+    .bind(&policy_req.policy_type)
+    .bind(&policy_req.business_function_filter)
+    .bind(&policy_req.department_filter)
+    .bind(&policy_req.location_filter)
+    .bind(&policy_req.risk_profile_filter)
+    .bind(&policy_req.asset_tags_filter)
+    .bind(&policy_req.policy_config)
+    .bind(policy_req.priority.unwrap_or(100))
+    .bind(now)
+    .bind(now)
+    .bind(&claims.sub)
+    .fetch_one(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(_) => HttpResponse::Ok().json(AssetPolicyResponse {
+            id: policy_id,
+            policy_name: policy_req.policy_name,
+            created_at: now,
+        }),
+        Err(e) => HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "POLICY_CREATION_FAILED",
+            "message": format!("Failed to create policy: {}", e)
+        }))
+    }
+}
+
+/// List asset-based policies
+#[utoipa::path(
+    get,
+    path = "/asset-policies",
+    tag = "Asset Management",
+    responses(
+        (status = 200, description = "List of asset policies"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn list_asset_policies(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "asset", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policies: Vec<AssetPolicyDb> = sqlx::query_as(
+        "SELECT * FROM asset_policies ORDER BY priority ASC, created_at DESC"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    HttpResponse::Ok().json(policies)
+}
+
+/// Get current system enforcement mode
+#[derive(Serialize, ToSchema)]
+pub struct EnforcementModeResponse {
+    pub enforcement_mode: String,
+    pub enabled_at: DateTime<Utc>,
+    pub enabled_by: Option<String>,
+    pub description: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/system/enforcement-mode",
+    tag = "System Configuration",
+    responses(
+        (status = 200, description = "Current enforcement mode", body = EnforcementModeResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_enforcement_mode(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "system", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    #[derive(sqlx::FromRow)]
+    struct EnforcementModeDb {
+        enforcement_mode: String,
+        enabled_at: DateTime<Utc>,
+        enabled_by: Option<String>,
+        description: Option<String>,
+    }
+
+    let result: Option<EnforcementModeDb> = sqlx::query_as(
+        "SELECT enforcement_mode, enabled_at, enabled_by, description 
+         FROM system_enforcement_mode 
+         ORDER BY enabled_at DESC 
+         LIMIT 1"
+    )
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    match result {
+        Some(mode) => HttpResponse::Ok().json(EnforcementModeResponse {
+            enforcement_mode: mode.enforcement_mode,
+            enabled_at: mode.enabled_at,
+            enabled_by: mode.enabled_by,
+            description: mode.description,
+        }),
+        None => HttpResponse::Ok().json(EnforcementModeResponse {
+            enforcement_mode: "ENFORCING".to_string(),
+            enabled_at: Utc::now(),
+            enabled_by: Some("system".to_string()),
+            description: Some("Default enforcement mode".to_string()),
+        })
+    }
+}
+
+/// Set system enforcement mode
+#[derive(Deserialize, Serialize, ToSchema)]
+pub struct SetEnforcementModeRequest {
+    #[schema(example = "SHADOW")]
+    pub enforcement_mode: String,
+    #[schema(example = "Testing new policies in shadow mode")]
+    pub description: Option<String>,
+    #[schema(example = "Testing new policies")]
+    pub notes: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/system/enforcement-mode",
+    tag = "System Configuration",
+    request_body = SetEnforcementModeRequest,
+    responses(
+        (status = 200, description = "Enforcement mode updated", body = EnforcementModeResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn set_enforcement_mode(
+    req: web::Json<SetEnforcementModeRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "system", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let mode_req = req.into_inner();
+    
+    // Validate enforcement mode
+    let valid_modes = ["SHADOW", "DRY_RUN", "ENFORCING"];
+    if !valid_modes.contains(&mode_req.enforcement_mode.as_str()) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "INVALID_ENFORCEMENT_MODE",
+            "message": format!("Enforcement mode must be one of: {:?}", valid_modes)
+        }));
+    }
+
+    let now = Utc::now();
+    let result = sqlx::query(
+        "INSERT INTO system_enforcement_mode (enforcement_mode, description, enabled_by, notes)
+         VALUES ($1, $2, $3, $4)
+         RETURNING enforcement_mode, enabled_at, enabled_by, description"
+    )
+    .bind(&mode_req.enforcement_mode)
+    .bind(&mode_req.description)
+    .bind(&claims.sub)
+    .bind(&mode_req.notes)
+    .fetch_one(&data.db_pool)
+    .await;
+
+    match result {
+        Ok(row) => {
+            let mode: String = row.get(0);
+            let enabled_at: DateTime<Utc> = row.get(1);
+            let enabled_by: Option<String> = row.get(2);
+            let description: Option<String> = row.get(3);
+            
+            log::info!("Enforcement mode changed to {} by {}", mode, claims.sub);
+            
+            HttpResponse::Ok().json(EnforcementModeResponse {
+                enforcement_mode: mode,
+                enabled_at,
+                enabled_by,
+                description,
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "FAILED_TO_SET_MODE",
+            "message": format!("Failed to set enforcement mode: {}", e)
+        }))
+    }
+}
+
+// ========== SHADOW MODE ANALYTICS ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct ShadowModeAnalytics {
+    pub total_logs: i64,
+    pub would_block_count: i64,
+    pub would_allow_count: i64,
+    pub block_percentage: f64,
+    pub top_blocked_agents: Vec<AgentShadowStats>,
+    pub top_blocked_regions: Vec<RegionShadowStats>,
+    pub top_policies_applied: Vec<PolicyShadowStats>,
+    pub time_range: TimeRange,
+    pub confidence_score: f64, // Confidence that shadow mode data is representative
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct AgentShadowStats {
+    pub agent_id: String,
+    pub would_block: i64,
+    pub would_allow: i64,
+    pub total: i64,
+    pub block_percentage: f64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RegionShadowStats {
+    pub region: String,
+    pub would_block: i64,
+    pub would_allow: i64,
+    pub total: i64,
+    pub block_percentage: f64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PolicyShadowStats {
+    pub policy_name: String,
+    pub would_block: i64,
+    pub would_allow: i64,
+    pub total: i64,
+    pub block_percentage: f64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TimeRange {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub days: i64,
+}
+
+/// Get shadow mode analytics
+#[utoipa::path(
+    get,
+    path = "/analytics/shadow-mode",
+    tag = "Shadow Mode",
+    params(
+        ("days" = Option<i64>, Query, description = "Number of days to analyze (default: 7)"),
+        ("agent_id" = Option<String>, Query, description = "Filter by agent ID"),
+    ),
+    responses(
+        (status = 200, description = "Shadow mode analytics", body = ShadowModeAnalytics),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_shadow_mode_analytics(
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "analytics", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let days = query.get("days")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(7);
+    let agent_filter = query.get("agent_id");
+
+    let end_time = Utc::now();
+    let start_time = end_time - chrono::Duration::days(days);
+
+    // Get total counts
+    let total_logs: i64 = if let Some(agent_id) = agent_filter {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM shadow_mode_logs 
+             WHERE timestamp >= $1 AND timestamp <= $2 AND agent_id = $3"
+        )
+        .bind(start_time)
+        .bind(end_time)
+        .bind(agent_id)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(0)
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM shadow_mode_logs 
+             WHERE timestamp >= $1 AND timestamp <= $2"
+        )
+        .bind(start_time)
+        .bind(end_time)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(0)
+    };
+
+    let would_block_count: i64 = if let Some(agent_id) = agent_filter {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM shadow_mode_logs 
+             WHERE timestamp >= $1 AND timestamp <= $2 AND would_block = true AND agent_id = $3"
+        )
+        .bind(start_time)
+        .bind(end_time)
+        .bind(agent_id)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(0)
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM shadow_mode_logs 
+             WHERE timestamp >= $1 AND timestamp <= $2 AND would_block = true"
+        )
+        .bind(start_time)
+        .bind(end_time)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(0)
+    };
+
+    let would_allow_count = total_logs - would_block_count;
+    let block_percentage = if total_logs > 0 {
+        (would_block_count as f64 / total_logs as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    // Get top blocked agents
+    #[derive(sqlx::FromRow)]
+    struct AgentStatsRow {
+        agent_id: String,
+        would_block: i64,
+        would_allow: i64,
+        total: i64,
+    }
+
+    let top_agents: Vec<AgentStatsRow> = if let Some(agent_id) = agent_filter {
+        sqlx::query_as::<_, AgentStatsRow>(
+            "SELECT 
+                agent_id,
+                COUNT(*) FILTER (WHERE would_block = true) as would_block,
+                COUNT(*) FILTER (WHERE would_allow = true) as would_allow,
+                COUNT(*) as total
+             FROM shadow_mode_logs
+             WHERE timestamp >= $1 AND timestamp <= $2 AND agent_id = $3
+             GROUP BY agent_id
+             ORDER BY would_block DESC
+             LIMIT 10"
+        )
+        .bind(start_time)
+        .bind(end_time)
+        .bind(agent_id)
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default()
+    } else {
+        sqlx::query_as::<_, AgentStatsRow>(
+            "SELECT 
+                agent_id,
+                COUNT(*) FILTER (WHERE would_block = true) as would_block,
+                COUNT(*) FILTER (WHERE would_allow = true) as would_allow,
+                COUNT(*) as total
+             FROM shadow_mode_logs
+             WHERE timestamp >= $1 AND timestamp <= $2
+             GROUP BY agent_id
+             ORDER BY would_block DESC
+             LIMIT 10"
+        )
+        .bind(start_time)
+        .bind(end_time)
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default()
+    };
+
+    let top_blocked_agents: Vec<AgentShadowStats> = top_agents.into_iter().map(|row| {
+        let block_pct = if row.total > 0 {
+            (row.would_block as f64 / row.total as f64) * 100.0
+        } else {
+            0.0
+        };
+        AgentShadowStats {
+            agent_id: row.agent_id,
+            would_block: row.would_block,
+            would_allow: row.would_allow,
+            total: row.total,
+            block_percentage: block_pct,
+        }
+    }).collect();
+
+    // Get top blocked regions
+    #[derive(sqlx::FromRow)]
+    struct RegionStatsRow {
+        detected_country: Option<String>,
+        would_block: i64,
+        would_allow: i64,
+        total: i64,
+    }
+
+    let top_regions: Vec<RegionStatsRow> = sqlx::query_as::<_, RegionStatsRow>(
+        "SELECT 
+            COALESCE(detected_country, 'UNKNOWN') as detected_country,
+            COUNT(*) FILTER (WHERE would_block = true) as would_block,
+            COUNT(*) FILTER (WHERE would_allow = true) as would_allow,
+            COUNT(*) as total
+         FROM shadow_mode_logs
+         WHERE timestamp >= $1 AND timestamp <= $2
+         GROUP BY detected_country
+         ORDER BY would_block DESC
+         LIMIT 10"
+    )
+    .bind(start_time)
+    .bind(end_time)
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let top_blocked_regions: Vec<RegionShadowStats> = top_regions.into_iter().map(|row| {
+        let block_pct = if row.total > 0 {
+            (row.would_block as f64 / row.total as f64) * 100.0
+        } else {
+            0.0
+        };
+        RegionShadowStats {
+            region: row.detected_country.unwrap_or_else(|| "UNKNOWN".to_string()),
+            would_block: row.would_block,
+            would_allow: row.would_allow,
+            total: row.total,
+            block_percentage: block_pct,
+        }
+    }).collect();
+
+    // Get top policies applied
+    #[derive(sqlx::FromRow)]
+    struct PolicyStatsRow {
+        policy_applied: Option<String>,
+        would_block: i64,
+        would_allow: i64,
+        total: i64,
+    }
+
+    let top_policies: Vec<PolicyStatsRow> = sqlx::query_as::<_, PolicyStatsRow>(
+        "SELECT 
+            COALESCE(policy_applied, 'UNKNOWN') as policy_applied,
+            COUNT(*) FILTER (WHERE would_block = true) as would_block,
+            COUNT(*) FILTER (WHERE would_allow = true) as would_allow,
+            COUNT(*) as total
+         FROM shadow_mode_logs
+         WHERE timestamp >= $1 AND timestamp <= $2
+         GROUP BY policy_applied
+         ORDER BY would_block DESC
+         LIMIT 10"
+    )
+    .bind(start_time)
+    .bind(end_time)
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let top_policies_applied: Vec<PolicyShadowStats> = top_policies.into_iter().map(|row| {
+        let block_pct = if row.total > 0 {
+            (row.would_block as f64 / row.total as f64) * 100.0
+        } else {
+            0.0
+        };
+        PolicyShadowStats {
+            policy_name: row.policy_applied.unwrap_or_else(|| "UNKNOWN".to_string()),
+            would_block: row.would_block,
+            would_allow: row.would_allow,
+            total: row.total,
+            block_percentage: block_pct,
+        }
+    }).collect();
+
+    // Calculate confidence score (based on sample size and time range)
+    let confidence_score = if total_logs >= 1000 {
+        95.0 // High confidence with large sample
+    } else if total_logs >= 100 {
+        85.0 // Medium-high confidence
+    } else if total_logs >= 10 {
+        70.0 // Medium confidence
+    } else {
+        50.0 // Low confidence - need more data
+    };
+
+    HttpResponse::Ok().json(ShadowModeAnalytics {
+        total_logs,
+        would_block_count,
+        would_allow_count,
+        block_percentage,
+        top_blocked_agents,
+        top_blocked_regions,
+        top_policies_applied,
+        time_range: TimeRange {
+            start: start_time,
+            end: end_time,
+            days,
+        },
+        confidence_score,
+    })
+}
+
+/// Configure circuit breaker for a policy
+#[derive(Deserialize, Serialize, ToSchema)]
+pub struct CircuitBreakerConfigRequest {
+    #[schema(example = true)]
+    pub enabled: bool,
+    #[schema(example = 10.0)]
+    pub error_threshold: Option<f64>, // Percentage: 0.0-100.0
+    #[schema(example = 5)]
+    pub window_minutes: Option<i32>,
+    #[schema(example = 15)]
+    pub cooldown_minutes: Option<i32>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CircuitBreakerConfigResponse {
+    pub policy_id: Uuid,
+    pub enabled: bool,
+    pub error_threshold: f64,
+    pub window_minutes: i32,
+    pub cooldown_minutes: i32,
+    pub current_state: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/policies/{policy_id}/circuit-breaker/config",
+    tag = "Policy Management",
+    params(
+        ("policy_id" = Uuid, Path, description = "Policy ID"),
+    ),
+    request_body = CircuitBreakerConfigRequest,
+    responses(
+        (status = 200, description = "Circuit breaker configured"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn configure_circuit_breaker(
+    policy_id: web::Path<Uuid>,
+    req: web::Json<CircuitBreakerConfigRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id = policy_id.into_inner();
+    let config = req.into_inner();
+    
+    // Validate threshold
+    if let Some(threshold) = config.error_threshold {
+        if threshold < 0.0 || threshold > 100.0 {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "INVALID_THRESHOLD",
+                "message": "Error threshold must be between 0.0 and 100.0"
+            }));
+        }
+    }
+    
+    let error_threshold = config.error_threshold.unwrap_or(10.0);
+    let window_minutes = config.window_minutes.unwrap_or(5);
+    let cooldown_minutes = config.cooldown_minutes.unwrap_or(15);
+    
+    let result = sqlx::query(
+        "UPDATE policy_versions 
+         SET circuit_breaker_enabled = $1,
+             circuit_breaker_error_threshold = $2,
+             circuit_breaker_window_minutes = $3,
+             circuit_breaker_cooldown_minutes = $4,
+             circuit_breaker_state = CASE 
+                 WHEN $1 = false THEN 'CLOSED'
+                 ELSE circuit_breaker_state
+             END
+         WHERE id = $5
+         RETURNING circuit_breaker_state"
+    )
+    .bind(config.enabled)
+    .bind(error_threshold)
+    .bind(window_minutes)
+    .bind(cooldown_minutes)
+    .bind(policy_id)
+    .fetch_optional(&data.db_pool)
+    .await;
+    
+    match result {
+        Ok(Some(row)) => {
+            let current_state: String = row.get(0);
+            HttpResponse::Ok().json(CircuitBreakerConfigResponse {
+                policy_id,
+                enabled: config.enabled,
+                error_threshold,
+                window_minutes,
+                cooldown_minutes,
+                current_state,
+            })
+        }
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "POLICY_NOT_FOUND",
+            "message": "Policy not found"
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "FAILED_TO_CONFIGURE",
+            "message": format!("Failed to configure circuit breaker: {}", e)
+        }))
+    }
+}
+
+// ========== CIRCUIT BREAKER ANALYTICS ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct CircuitBreakerAnalytics {
+    pub total_policies: i64,
+    pub open_circuits: i64,
+    pub closed_circuits: i64,
+    pub half_open_circuits: i64,
+    pub recent_transitions: Vec<CircuitBreakerTransition>,
+    pub policies: Vec<PolicyCircuitBreakerStatus>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CircuitBreakerTransition {
+    pub policy_id: String,
+    pub policy_type: String,
+    pub state_transition: String,
+    pub error_rate: f64,
+    pub error_count: i64,
+    pub total_requests: i64,
+    pub triggered_by: String,
+    pub notes: Option<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PolicyCircuitBreakerStatus {
+    pub policy_id: String,
+    pub policy_type: String,
+    pub enabled: bool,
+    pub current_state: String,
+    pub error_threshold: f64,
+    pub current_error_rate: f64,
+    pub error_count: i64,
+    pub total_requests: i64,
+    pub opened_at: Option<DateTime<Utc>>,
+    pub last_error_at: Option<DateTime<Utc>>,
+    pub cooldown_minutes: i32,
+}
+
+/// Get circuit breaker analytics
+#[utoipa::path(
+    get,
+    path = "/analytics/circuit-breaker",
+    tag = "Circuit Breaker",
+    responses(
+        (status = 200, description = "Circuit breaker analytics", body = CircuitBreakerAnalytics),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_circuit_breaker_analytics(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "analytics", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    // Get all policies with circuit breaker status
+    #[derive(sqlx::FromRow)]
+    struct PolicyStatusRow {
+        id: uuid::Uuid,
+        policy_type: String,
+        circuit_breaker_enabled: bool,
+        circuit_breaker_state: Option<String>,
+        circuit_breaker_error_threshold: Option<f64>,
+        circuit_breaker_opened_at: Option<DateTime<Utc>>,
+        circuit_breaker_last_error_at: Option<DateTime<Utc>>,
+        circuit_breaker_cooldown_minutes: Option<i32>,
+    }
+
+    let policies: Vec<PolicyStatusRow> = sqlx::query_as::<_, PolicyStatusRow>(
+        "SELECT 
+            id, policy_type,
+            COALESCE(circuit_breaker_enabled, false) as circuit_breaker_enabled,
+            circuit_breaker_state,
+            circuit_breaker_error_threshold,
+            circuit_breaker_opened_at,
+            circuit_breaker_last_error_at,
+            circuit_breaker_cooldown_minutes
+         FROM policy_versions
+         WHERE is_active = true AND circuit_breaker_enabled = true
+         ORDER BY circuit_breaker_opened_at DESC NULLS LAST"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let total_policies = policies.len() as i64;
+    let open_circuits = policies.iter().filter(|p| p.circuit_breaker_state.as_deref() == Some("OPEN")).count() as i64;
+    let closed_circuits = policies.iter().filter(|p| p.circuit_breaker_state.as_deref() == Some("CLOSED") || p.circuit_breaker_state.is_none()).count() as i64;
+    let half_open_circuits = policies.iter().filter(|p| p.circuit_breaker_state.as_deref() == Some("HALF_OPEN")).count() as i64;
+
+    // Get recent transitions
+    #[derive(sqlx::FromRow)]
+    struct TransitionRow {
+        policy_version_id: uuid::Uuid,
+        state_transition: String,
+        error_rate: f64,
+        error_count: i64,
+        total_requests: i64,
+        triggered_by: String,
+        notes: Option<String>,
+        timestamp: DateTime<Utc>,
+    }
+
+    let transitions: Vec<TransitionRow> = sqlx::query_as::<_, TransitionRow>(
+        "SELECT 
+            cbh.policy_version_id,
+            cbh.state_transition,
+            cbh.error_rate,
+            cbh.error_count,
+            cbh.total_requests,
+            cbh.triggered_by,
+            cbh.notes,
+            cbh.timestamp
+         FROM circuit_breaker_history cbh
+         JOIN policy_versions pv ON pv.id = cbh.policy_version_id
+         WHERE pv.is_active = true
+         ORDER BY cbh.timestamp DESC
+         LIMIT 50"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let mut recent_transitions: Vec<CircuitBreakerTransition> = Vec::new();
+    for row in transitions {
+        let policy_type: String = sqlx::query_scalar(
+            "SELECT policy_type FROM policy_versions WHERE id = $1"
+        )
+        .bind(row.policy_version_id)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or_else(|_| "UNKNOWN".to_string());
+
+        recent_transitions.push(CircuitBreakerTransition {
+            policy_id: row.policy_version_id.to_string(),
+            policy_type,
+            state_transition: row.state_transition,
+            error_rate: row.error_rate,
+            error_count: row.error_count,
+            total_requests: row.total_requests,
+            triggered_by: row.triggered_by,
+            notes: row.notes,
+            timestamp: row.timestamp,
+        });
+    }
+
+    // Get current error rates for each policy
+    let mut policies_status: Vec<PolicyCircuitBreakerStatus> = Vec::new();
+    for p in policies {
+        // Get current error rate from error tracking
+        let error_tracking: Option<(i64, i64, f64)> = sqlx::query_as::<_, (i64, i64, f64)>(
+            "SELECT 
+                error_count, total_requests, error_rate
+             FROM policy_error_tracking
+             WHERE policy_version_id = $1
+             ORDER BY window_end DESC
+             LIMIT 1"
+        )
+        .bind(p.id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        let (error_count, total_requests, current_error_rate) = error_tracking.unwrap_or((0, 0, 0.0));
+
+        policies_status.push(PolicyCircuitBreakerStatus {
+            policy_id: p.id.to_string(),
+            policy_type: p.policy_type,
+            enabled: p.circuit_breaker_enabled,
+            current_state: p.circuit_breaker_state.unwrap_or_else(|| "CLOSED".to_string()),
+            error_threshold: p.circuit_breaker_error_threshold.unwrap_or(10.0),
+            current_error_rate,
+            error_count,
+            total_requests,
+            opened_at: p.circuit_breaker_opened_at,
+            last_error_at: p.circuit_breaker_last_error_at,
+            cooldown_minutes: p.circuit_breaker_cooldown_minutes.unwrap_or(15),
+        });
+    }
+
+    HttpResponse::Ok().json(CircuitBreakerAnalytics {
+        total_policies,
+        open_circuits,
+        closed_circuits,
+        half_open_circuits,
+        recent_transitions,
+        policies: policies_status,
+    })
+}
+
+// ========== CANARY DEPLOYMENT ANALYTICS ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct CanaryAnalytics {
+    pub total_policies: i64,
+    pub active_canaries: i64,
+    pub policies: Vec<PolicyCanaryStatus>,
+    pub recent_promotions: Vec<CanaryTransition>,
+    pub recent_rollbacks: Vec<CanaryTransition>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PolicyCanaryStatus {
+    pub policy_id: String,
+    pub policy_type: String,
+    pub current_traffic_percentage: i32,
+    pub total_requests: i64,
+    pub successful_requests: i64,
+    pub failed_requests: i64,
+    pub blocked_requests: i64,
+    pub success_rate: f64,
+    pub auto_promote_enabled: bool,
+    pub auto_rollback_enabled: bool,
+    pub promotion_threshold: f64,
+    pub rollback_threshold: f64,
+    pub min_requests_for_promotion: i64,
+    pub evaluation_window_minutes: i32,
+    pub last_evaluated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CanaryTransition {
+    pub policy_id: String,
+    pub policy_type: String,
+    pub from_percentage: i32,
+    pub to_percentage: i32,
+    pub reason: String,
+    pub success_rate: f64,
+    pub total_requests: i64,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Get canary deployment analytics
+#[utoipa::path(
+    get,
+    path = "/analytics/canary",
+    tag = "Canary Deployment",
+    responses(
+        (status = 200, description = "Canary deployment analytics", body = CanaryAnalytics),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_canary_analytics(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "analytics", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    // Get all policies with canary deployment
+    #[derive(sqlx::FromRow)]
+    struct PolicyCanaryRow {
+        id: uuid::Uuid,
+        policy_type: String,
+        rollout_percentage: Option<i32>,
+        auto_promote_enabled: Option<bool>,
+        auto_rollback_enabled: Option<bool>,
+        promotion_threshold: Option<f64>,
+        rollback_threshold: Option<f64>,
+        min_requests_for_promotion: Option<i64>,
+        evaluation_window_minutes: Option<i32>,
+    }
+
+    let policies: Vec<PolicyCanaryRow> = sqlx::query_as::<_, PolicyCanaryRow>(
+        "SELECT 
+            id, policy_type,
+            rollout_percentage,
+            auto_promote_enabled,
+            auto_rollback_enabled,
+            promotion_threshold,
+            rollback_threshold,
+            min_requests_for_promotion,
+            evaluation_window_minutes
+         FROM policy_versions
+         WHERE is_active = true AND rollout_percentage IS NOT NULL AND rollout_percentage < 100
+         ORDER BY rollout_percentage DESC"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let total_policies = policies.len() as i64;
+    let active_canaries = policies.iter().filter(|p| p.rollout_percentage.unwrap_or(100) < 100).count() as i64;
+
+    // Get canary metrics for each policy
+    let mut policies_status: Vec<PolicyCanaryStatus> = Vec::new();
+    for p in policies {
+        let traffic_pct = p.rollout_percentage.unwrap_or(100);
+        
+        // Get latest canary metrics
+        #[derive(sqlx::FromRow)]
+        struct CanaryMetricsRow {
+            total_requests: i64,
+            successful_requests: i64,
+            failed_requests: i64,
+            blocked_requests: i64,
+            success_rate: f64,
+            window_end: DateTime<Utc>,
+        }
+
+        let metrics: Option<CanaryMetricsRow> = sqlx::query_as::<_, CanaryMetricsRow>(
+            "SELECT 
+                total_requests, successful_requests, failed_requests, blocked_requests,
+                success_rate, window_end
+             FROM canary_metrics
+             WHERE policy_version_id = $1 AND traffic_percentage = $2
+             ORDER BY window_end DESC
+             LIMIT 1"
+        )
+        .bind(p.id)
+        .bind(traffic_pct)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        let (total_requests, successful_requests, failed_requests, blocked_requests, success_rate) = 
+            if let Some(m) = metrics {
+                (m.total_requests, m.successful_requests, m.failed_requests, m.blocked_requests, m.success_rate)
+            } else {
+                (0, 0, 0, 0, 100.0)
+            };
+
+        policies_status.push(PolicyCanaryStatus {
+            policy_id: p.id.to_string(),
+            policy_type: p.policy_type,
+            current_traffic_percentage: traffic_pct,
+            total_requests,
+            successful_requests,
+            failed_requests,
+            blocked_requests,
+            success_rate,
+            auto_promote_enabled: p.auto_promote_enabled.unwrap_or(true),
+            auto_rollback_enabled: p.auto_rollback_enabled.unwrap_or(true),
+            promotion_threshold: p.promotion_threshold.unwrap_or(95.0),
+            rollback_threshold: p.rollback_threshold.unwrap_or(90.0),
+            min_requests_for_promotion: p.min_requests_for_promotion.unwrap_or(100),
+            evaluation_window_minutes: p.evaluation_window_minutes.unwrap_or(10),
+            last_evaluated_at: None, // TODO: Add last_evaluated_at to policy_versions
+        });
+    }
+
+    // Get recent promotions and rollbacks from canary_history
+    #[derive(sqlx::FromRow)]
+    struct CanaryHistoryRow {
+        policy_version_id: uuid::Uuid,
+        from_percentage: i32,
+        to_percentage: i32,
+        reason: String,
+        success_rate: f64,
+        total_requests: i64,
+        timestamp: DateTime<Utc>,
+    }
+
+    let promotions: Vec<CanaryHistoryRow> = sqlx::query_as::<_, CanaryHistoryRow>(
+        "SELECT 
+            ch.policy_version_id, ch.from_percentage, ch.to_percentage,
+            ch.reason, ch.success_rate, ch.total_requests, ch.timestamp
+         FROM canary_history ch
+         JOIN policy_versions pv ON pv.id = ch.policy_version_id
+         WHERE pv.is_active = true AND ch.to_percentage > ch.from_percentage
+         ORDER BY ch.timestamp DESC
+         LIMIT 20"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let rollbacks: Vec<CanaryHistoryRow> = sqlx::query_as::<_, CanaryHistoryRow>(
+        "SELECT 
+            ch.policy_version_id, ch.from_percentage, ch.to_percentage,
+            ch.reason, ch.success_rate, ch.total_requests, ch.timestamp
+         FROM canary_history ch
+         JOIN policy_versions pv ON pv.id = ch.policy_version_id
+         WHERE pv.is_active = true AND ch.to_percentage < ch.from_percentage
+         ORDER BY ch.timestamp DESC
+         LIMIT 20"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let mut recent_promotions: Vec<CanaryTransition> = Vec::new();
+    for row in promotions {
+        let policy_type: String = sqlx::query_scalar(
+            "SELECT policy_type FROM policy_versions WHERE id = $1"
+        )
+        .bind(row.policy_version_id)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or_else(|_| "UNKNOWN".to_string());
+
+        recent_promotions.push(CanaryTransition {
+            policy_id: row.policy_version_id.to_string(),
+            policy_type,
+            from_percentage: row.from_percentage,
+            to_percentage: row.to_percentage,
+            reason: row.reason,
+            success_rate: row.success_rate,
+            total_requests: row.total_requests,
+            timestamp: row.timestamp,
+        });
+    }
+
+    let mut recent_rollbacks: Vec<CanaryTransition> = Vec::new();
+    for row in rollbacks {
+        let policy_type: String = sqlx::query_scalar(
+            "SELECT policy_type FROM policy_versions WHERE id = $1"
+        )
+        .bind(row.policy_version_id)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or_else(|_| "UNKNOWN".to_string());
+
+        recent_rollbacks.push(CanaryTransition {
+            policy_id: row.policy_version_id.to_string(),
+            policy_type,
+            from_percentage: row.from_percentage,
+            to_percentage: row.to_percentage,
+            reason: row.reason,
+            success_rate: row.success_rate,
+            total_requests: row.total_requests,
+            timestamp: row.timestamp,
+        });
+    }
+
+    HttpResponse::Ok().json(CanaryAnalytics {
+        total_policies,
+        active_canaries,
+        policies: policies_status,
+        recent_promotions,
+        recent_rollbacks,
+    })
+}
+
+/// Pre-flight impact analysis - preview what would break before creating a policy
+#[utoipa::path(
+    get,
+    path = "/policies/preview-impact",
+    tag = "Policy Management",
+    params(
+        ("policy_type" = String, Query, description = "Policy type: SOVEREIGN_LOCK, AGENT_REVOCATION, etc."),
+        ("time_range_days" = Option<i64>, Query, description = "Time range in days (default: 7)"),
+        ("agent_filter" = Option<String>, Query, description = "Comma-separated agent IDs to filter"),
+    ),
+    responses(
+        (status = 200, description = "Impact preview", body = SimulationResult),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn preview_policy_impact(
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_type_str = query.get("policy_type")
+        .ok_or_else(|| HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "MISSING_POLICY_TYPE",
+            "message": "policy_type parameter is required"
+        })))
+        .unwrap();
+    
+    let policy_type = match policy_type_str.as_str() {
+        "SOVEREIGN_LOCK" => crate::core::policy_simulator::PolicyType::SovereignLock,
+        "AGENT_REVOCATION" => crate::core::policy_simulator::PolicyType::AgentRevocation,
+        "CONSENT_REQUIREMENT" => crate::core::policy_simulator::PolicyType::ConsentRequirement,
+        "PROCESSING_RESTRICTION" => crate::core::policy_simulator::PolicyType::ProcessingRestriction,
+        _ => return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "INVALID_POLICY_TYPE",
+            "message": "policy_type must be one of: SOVEREIGN_LOCK, AGENT_REVOCATION, CONSENT_REQUIREMENT, PROCESSING_RESTRICTION"
+        }))
+    };
+    
+    let time_range_days = query.get("time_range_days")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(7);
+    
+    let agent_filter = query.get("agent_filter")
+        .map(|s| s.split(',').map(|id| id.trim().to_string()).collect());
+    
+    // Default policy config based on type
+    let policy_config = match policy_type {
+        crate::core::policy_simulator::PolicyType::SovereignLock => {
+            serde_json::json!({
+                "blocked_countries": ["US", "CN", "RU"]
+            })
+        }
+        _ => serde_json::json!({})
+    };
+    
+    let simulation_request = crate::core::policy_simulator::SimulationRequest {
+        policy_type: policy_type.clone(),
+        policy_config,
+        time_range_days: Some(time_range_days),
+        agent_filter,
+        business_function_filter: query.get("business_function").map(|s| s.split(',').map(|id| id.trim().to_string()).collect()),
+        location_filter: query.get("location").map(|s| s.split(',').map(|id| id.trim().to_string()).collect()),
+        time_offset_days: query.get("time_offset_days").and_then(|s| s.parse::<i64>().ok()),
+    };
+    
+    match crate::core::policy_simulator::PolicySimulator::simulate(
+        &data.db_pool,
+        simulation_request.clone(),
+    ).await {
+        Ok(result) => {
+            // Get affected systems from asset registry
+            let mut affected_systems: Vec<serde_json::Value> = Vec::new();
+            for agent_id in &result.critical_agents {
+                if let Ok(Some(asset)) = crate::core::asset_policy_engine::AssetPolicyEngine::get_asset_context_from_agent(
+                    &data.db_pool,
+                    agent_id,
+                ).await {
+                    affected_systems.push(serde_json::json!({
+                        "agent_id": agent_id,
+                        "asset_id": asset.asset_id,
+                        "business_function": asset.business_function,
+                        "location": asset.location,
+                        "risk_profile": asset.risk_profile,
+                        "impact_level": "CRITICAL"
+                    }));
+                }
+            }
+            for agent_id in &result.partial_impact_agents {
+                if let Ok(Some(asset)) = crate::core::asset_policy_engine::AssetPolicyEngine::get_asset_context_from_agent(
+                    &data.db_pool,
+                    agent_id,
+                ).await {
+                    affected_systems.push(serde_json::json!({
+                        "agent_id": agent_id,
+                        "asset_id": asset.asset_id,
+                        "business_function": asset.business_function,
+                        "location": asset.location,
+                        "risk_profile": asset.risk_profile,
+                        "impact_level": "PARTIAL"
+                    }));
+                }
+            }
+
+            // Group by business function
+            let mut business_function_impact: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+            for system in &affected_systems {
+                if let Some(bf) = system.get("business_function").and_then(|v| v.as_str()) {
+                    *business_function_impact.entry(bf.to_string()).or_insert(0) += 1;
+                }
+            }
+
+            // Estimate transaction volume impact
+            // Assume each blocked request represents a transaction
+            let estimated_transaction_volume_affected = result.would_block;
+            let estimated_daily_transactions = if time_range_days > 0 {
+                estimated_transaction_volume_affected / time_range_days
+            } else {
+                0
+            };
+
+            // Calculate confidence score based on sample size and time range
+            let confidence_score = if result.total_requests >= 10000 {
+                95.0 // High confidence with large sample
+            } else if result.total_requests >= 1000 {
+                85.0 // Medium-high confidence
+            } else if result.total_requests >= 100 {
+                70.0 // Medium confidence
+            } else if result.total_requests >= 10 {
+                50.0 // Low confidence
+            } else {
+                30.0 // Very low confidence - need more data
+            };
+
+            // Historical trend analysis (compare with previous periods)
+            let historical_analysis = if time_range_days >= 7 {
+                // Get data for previous period
+                let prev_start = Utc::now() - chrono::Duration::days(time_range_days * 2);
+                let prev_end = Utc::now() - chrono::Duration::days(time_range_days);
+                
+                let prev_total: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM compliance_records WHERE timestamp >= $1 AND timestamp < $2"
+                )
+                .bind(prev_start)
+                .bind(prev_end)
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0);
+
+                let trend = if prev_total > 0 {
+                    let change = ((result.total_requests as f64 - prev_total as f64) / prev_total as f64) * 100.0;
+                    if change > 10.0 {
+                        "INCREASING"
+                    } else if change < -10.0 {
+                        "DECREASING"
+                    } else {
+                        "STABLE"
+                    }
+                } else {
+                    "NO_BASELINE"
+                };
+
+                serde_json::json!({
+                    "previous_period_total": prev_total,
+                    "current_period_total": result.total_requests,
+                    "trend": trend,
+                    "percentage_change": if prev_total > 0 {
+                        ((result.total_requests as f64 - prev_total as f64) / prev_total as f64) * 100.0
+                    } else {
+                        0.0
+                    }
+                })
+            } else {
+                serde_json::json!({
+                    "previous_period_total": null,
+                    "current_period_total": result.total_requests,
+                    "trend": "INSUFFICIENT_DATA",
+                    "percentage_change": null
+                })
+            };
+
+            // Enhanced business impact estimation
+            let business_impact = serde_json::json!({
+                "estimated_transaction_volume_affected": estimated_transaction_volume_affected,
+                "estimated_daily_transactions_affected": estimated_daily_transactions,
+                "estimated_revenue_impact": null, // Would need business metrics integration
+                "critical_systems_affected": result.critical_agents.len(),
+                "partial_impact_systems": result.partial_impact_agents.len(),
+                "affected_business_functions": business_function_impact,
+                "recommendation": match result.estimated_impact {
+                    crate::core::policy_simulator::ImpactLevel::Low => "Safe to deploy - Low impact expected",
+                    crate::core::policy_simulator::ImpactLevel::Medium => "Deploy with caution - Monitor closely for 24-48 hours",
+                    crate::core::policy_simulator::ImpactLevel::High => "High risk - Use gradual rollout (canary deployment) and shadow mode",
+                    crate::core::policy_simulator::ImpactLevel::Critical => "CRITICAL RISK - Do not deploy without mitigation plan. Consider policy adjustment or phased rollout.",
+                },
+                "deployment_strategy": match result.estimated_impact {
+                    crate::core::policy_simulator::ImpactLevel::Low => "Direct deployment to ENFORCING mode",
+                    crate::core::policy_simulator::ImpactLevel::Medium => "Start with SHADOW mode, then canary at 1%",
+                    crate::core::policy_simulator::ImpactLevel::High => "SHADOW mode → 1% canary → 5% → 10% → 25% → 50% → 100%",
+                    crate::core::policy_simulator::ImpactLevel::Critical => "SHADOW mode only - Review policy configuration before considering rollout",
+                }
+            });
+            
+            HttpResponse::Ok().json(serde_json::json!({
+                "simulation_result": result,
+                "business_impact": business_impact,
+                "affected_systems": affected_systems,
+                "confidence_score": confidence_score,
+                "historical_analysis": historical_analysis,
+                "preview_mode": true,
+                "time_range_days": time_range_days
+            }))
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "SIMULATION_FAILED",
+            "message": format!("Failed to preview impact: {}", e)
+        }))
+    }
+}
+
+/// Compare two policy configurations
+#[utoipa::path(
+    post,
+    path = "/policies/compare",
+    tag = "Policy Management",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Policy comparison result"),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn compare_policies(
+    req: web::Json<serde_json::Value>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let body = req.into_inner();
+    
+    let policy_type_a = match body.get("policy_type_a").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "MISSING_POLICY_TYPE_A",
+            "message": "policy_type_a is required"
+        })),
+    };
+    
+    let policy_config_a = body.get("policy_config_a")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    
+    let policy_type_b = match body.get("policy_type_b").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "MISSING_POLICY_TYPE_B",
+            "message": "policy_type_b is required"
+        })),
+    };
+    
+    let policy_config_b = body.get("policy_config_b")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    
+    let time_range_days = body.get("time_range_days")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(7);
+
+    // Parse policy types
+    let policy_type_a_enum = match policy_type_a {
+        "SOVEREIGN_LOCK" => crate::core::policy_simulator::PolicyType::SovereignLock,
+        "AGENT_REVOCATION" => crate::core::policy_simulator::PolicyType::AgentRevocation,
+        "CONSENT_REQUIREMENT" => crate::core::policy_simulator::PolicyType::ConsentRequirement,
+        "PROCESSING_RESTRICTION" => crate::core::policy_simulator::PolicyType::ProcessingRestriction,
+        _ => return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "INVALID_POLICY_TYPE_A",
+            "message": "Invalid policy_type_a"
+        }))
+    };
+
+    let policy_type_b_enum = match policy_type_b {
+        "SOVEREIGN_LOCK" => crate::core::policy_simulator::PolicyType::SovereignLock,
+        "AGENT_REVOCATION" => crate::core::policy_simulator::PolicyType::AgentRevocation,
+        "CONSENT_REQUIREMENT" => crate::core::policy_simulator::PolicyType::ConsentRequirement,
+        "PROCESSING_RESTRICTION" => crate::core::policy_simulator::PolicyType::ProcessingRestriction,
+        _ => return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "INVALID_POLICY_TYPE_B",
+            "message": "Invalid policy_type_b"
+        }))
+    };
+
+    // Run both simulations
+    let sim_a = crate::core::policy_simulator::PolicySimulator::simulate(
+        &data.db_pool,
+        crate::core::policy_simulator::SimulationRequest {
+            policy_type: policy_type_a_enum.clone(),
+            policy_config: policy_config_a,
+            time_range_days: Some(time_range_days),
+            agent_filter: None,
+            business_function_filter: None,
+            location_filter: None,
+            time_offset_days: None,
+        },
+    ).await;
+
+    let sim_b = crate::core::policy_simulator::PolicySimulator::simulate(
+        &data.db_pool,
+        crate::core::policy_simulator::SimulationRequest {
+            policy_type: policy_type_b_enum.clone(),
+            policy_config: policy_config_b,
+            time_range_days: Some(time_range_days),
+            agent_filter: None,
+            business_function_filter: None,
+            location_filter: None,
+            time_offset_days: None,
+        },
+    ).await;
+
+    match (sim_a, sim_b) {
+        (Ok(result_a), Ok(result_b)) => {
+            let block_diff = result_b.would_block - result_a.would_block;
+            let block_diff_percentage = if result_a.total_requests > 0 {
+                (block_diff as f64 / result_a.total_requests as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            HttpResponse::Ok().json(serde_json::json!({
+                "policy_a": {
+                    "policy_type": policy_type_a,
+                    "would_block": result_a.would_block,
+                    "would_allow": result_a.would_allow,
+                    "estimated_impact": format!("{:?}", result_a.estimated_impact),
+                    "critical_agents": result_a.critical_agents.len(),
+                    "partial_impact_agents": result_a.partial_impact_agents.len(),
+                },
+                "policy_b": {
+                    "policy_type": policy_type_b,
+                    "would_block": result_b.would_block,
+                    "would_allow": result_b.would_allow,
+                    "estimated_impact": format!("{:?}", result_b.estimated_impact),
+                    "critical_agents": result_b.critical_agents.len(),
+                    "partial_impact_agents": result_b.partial_impact_agents.len(),
+                },
+                "comparison": {
+                    "block_difference": block_diff,
+                    "block_difference_percentage": block_diff_percentage,
+                    "more_restrictive": if block_diff > 0 { "POLICY_B" } else if block_diff < 0 { "POLICY_A" } else { "EQUAL" },
+                    "recommendation": if (block_diff.abs() as f64) < (result_a.total_requests as f64 * 0.05) {
+                        "Both policies have similar impact - choose based on business requirements".to_string()
+                    } else if block_diff > 0 {
+                        format!("Policy B would block {} more requests ({:.2}% increase). Consider if additional restrictions are necessary.", block_diff, block_diff_percentage.abs())
+                    } else {
+                        format!("Policy A would block {} more requests ({:.2}% increase). Policy B is less restrictive.", block_diff.abs(), block_diff_percentage.abs())
+                    }
+                }
+            }))
+        }
+        (Err(e), _) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "SIMULATION_A_FAILED",
+            "message": format!("Failed to simulate policy A: {}", e)
+        })),
+        (_, Err(e)) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "SIMULATION_B_FAILED",
+            "message": format!("Failed to simulate policy B: {}", e)
+        })),
+    }
+}
+
+/// Get real-time policy health metrics
+#[derive(Serialize, ToSchema)]
+pub struct PolicyHealthResponse {
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub policy_type: String,
+    pub is_active: bool,
+    pub rollout_percentage: i32,
+    pub circuit_breaker_state: Option<String>,
+    pub success_rate: f64,
+    pub error_rate: f64,
+    pub total_requests: i64,
+    pub successful_requests: i64,
+    pub failed_requests: i64,
+    pub blocked_requests: i64,
+    pub health_status: String, // "HEALTHY", "DEGRADED", "CRITICAL"
+    pub last_updated: DateTime<Utc>,
+    pub avg_latency_ms: Option<f64>,
+    pub p95_latency_ms: Option<f64>,
+    pub p99_latency_ms: Option<f64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/policies/{policy_id}/health",
+    tag = "Policy Management",
+    params(
+        ("policy_id" = Uuid, Path, description = "Policy ID"),
+    ),
+    responses(
+        (status = 200, description = "Policy health status", body = PolicyHealthResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_policy_health(
+    policy_id: web::Path<Uuid>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id = policy_id.into_inner();
+    
+    #[derive(sqlx::FromRow)]
+    struct PolicyDb {
+        policy_name: String,
+        policy_type: String,
+        is_active: bool,
+        rollout_percentage: i32,
+        circuit_breaker_state: Option<String>,
+    }
+    
+    let policy: Option<PolicyDb> = sqlx::query_as(
+        "SELECT policy_name, policy_type, is_active, rollout_percentage, circuit_breaker_state
+         FROM policy_versions
+         WHERE id = $1"
+    )
+    .bind(policy_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+    
+    match policy {
+        Some(p) => {
+            // Get canary metrics (last 10 minutes)
+            let now = chrono::Utc::now();
+            let window_start = now - chrono::Duration::minutes(10);
+            
+            #[derive(sqlx::FromRow)]
+            struct MetricsRow {
+                total_requests: Option<i64>,
+                successful_requests: Option<i64>,
+                failed_requests: Option<i64>,
+                blocked_requests: Option<i64>,
+            }
+            
+            let metrics: MetricsRow = sqlx::query_as(
+                "SELECT 
+                    SUM(total_requests) as total_requests,
+                    SUM(successful_requests) as successful_requests,
+                    SUM(failed_requests) as failed_requests,
+                    SUM(blocked_requests) as blocked_requests
+                 FROM canary_metrics
+                 WHERE policy_version_id = $1
+                   AND window_start >= $2"
+            )
+            .bind(policy_id)
+            .bind(window_start)
+            .fetch_one(&data.db_pool)
+            .await
+            .unwrap_or(MetricsRow {
+                total_requests: Some(0),
+                successful_requests: Some(0),
+                failed_requests: Some(0),
+                blocked_requests: Some(0),
+            });
+
+            // Get latency metrics from compliance_records (if available)
+            #[derive(sqlx::FromRow)]
+            struct LatencyRow {
+                avg_latency: Option<f64>,
+                p95_latency: Option<f64>,
+                p99_latency: Option<f64>,
+            }
+
+            let latency: LatencyRow = sqlx::query_as(
+                "SELECT 
+                    AVG(EXTRACT(EPOCH FROM (completed_at - timestamp)) * 1000) as avg_latency,
+                    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - timestamp)) * 1000) as p95_latency,
+                    PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - timestamp)) * 1000) as p99_latency
+                 FROM compliance_records
+                 WHERE policy_version_id = $1
+                   AND timestamp >= $2
+                   AND completed_at IS NOT NULL"
+            )
+            .bind(policy_id)
+            .bind(window_start)
+            .fetch_one(&data.db_pool)
+            .await
+            .unwrap_or(LatencyRow {
+                avg_latency: None,
+                p95_latency: None,
+                p99_latency: None,
+            });
+
+            let total = metrics.total_requests.unwrap_or(0);
+            let successful = metrics.successful_requests.unwrap_or(0);
+            let failed = metrics.failed_requests.unwrap_or(0);
+            let blocked = metrics.blocked_requests.unwrap_or(0);
+            
+            let success_rate = if total > 0 {
+                (successful as f64 / total as f64) * 100.0
+            } else {
+                100.0
+            };
+            
+            let error_rate = if total > 0 {
+                ((failed + blocked) as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+            
+            // Determine health status
+            let health_status = if error_rate >= 10.0 || p.circuit_breaker_state.as_deref() == Some("OPEN") {
+                "CRITICAL"
+            } else if error_rate >= 5.0 {
+                "DEGRADED"
+            } else {
+                "HEALTHY"
+            };
+            
+            HttpResponse::Ok().json(PolicyHealthResponse {
+                policy_id,
+                policy_name: p.policy_name,
+                policy_type: p.policy_type,
+                is_active: p.is_active,
+                rollout_percentage: p.rollout_percentage,
+                circuit_breaker_state: p.circuit_breaker_state,
+                success_rate,
+                error_rate,
+                total_requests: total,
+                successful_requests: successful,
+                failed_requests: failed,
+                blocked_requests: blocked,
+                health_status: health_status.to_string(),
+                last_updated: now,
+                avg_latency_ms: latency.avg_latency,
+                p95_latency_ms: latency.p95_latency,
+                p99_latency_ms: latency.p99_latency,
+            })
+        }
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "POLICY_NOT_FOUND",
+            "message": "Policy not found"
+        }))
+    }
+}
+
+/// Approve a policy (for multi-step approval workflow)
+#[derive(Deserialize, Serialize, ToSchema)]
+pub struct PolicyApprovalRequest {
+    #[schema(example = "Approved after review")]
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PolicyApprovalResponse {
+    pub policy_id: Uuid,
+    pub approver_id: String,
+    pub approval_count: i64,
+    pub required_count: i32,
+    pub can_activate: bool,
+    pub status: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/policies/{policy_id}/approve",
+    tag = "Policy Management",
+    params(
+        ("policy_id" = Uuid, Path, description = "Policy ID"),
+    ),
+    request_body = PolicyApprovalRequest,
+    responses(
+        (status = 200, description = "Policy approved"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn approve_policy(
+    policy_id: web::Path<Uuid>,
+    req: web::Json<PolicyApprovalRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id = policy_id.into_inner();
+    let approval_req = req.into_inner();
+    
+    // Check if policy exists and requires approval
+    #[derive(sqlx::FromRow)]
+    struct PolicyCheck {
+        requires_approval: bool,
+        approval_required_count: i32,
+    }
+    
+    let policy_check: Option<PolicyCheck> = sqlx::query_as(
+        "SELECT requires_approval, approval_required_count
+         FROM policy_versions
+         WHERE id = $1"
+    )
+    .bind(policy_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+    
+    match policy_check {
+        Some(p) => {
+            if !p.requires_approval {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "APPROVAL_NOT_REQUIRED",
+                    "message": "This policy does not require approval"
+                }));
+            }
+            
+            // Check if user can approve (directly or via delegation)
+            // First, get the list of required approvers
+            let required_approvers: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT approver_id 
+                 FROM policy_approvals 
+                 WHERE policy_version_id = $1 AND action = 'APPROVED'"
+            )
+            .bind(policy_id)
+            .fetch_all(&data.db_pool)
+            .await
+            .unwrap_or_default();
+
+            // Check if current user can approve (either directly or via delegation)
+            let can_approve: Option<bool> = sqlx::query_scalar(
+                "SELECT can_approve_on_behalf($1, $2)"
+            )
+            .bind(&claims.sub)
+            .bind(&claims.sub) // For now, check direct approval
+            .fetch_optional(&data.db_pool)
+            .await
+            .ok()
+            .flatten();
+
+            // Also check if user has delegated authority from any required approver
+            let has_delegated_authority = if !required_approvers.is_empty() {
+                let mut has_delegation = false;
+                for approver in &required_approvers {
+                    let delegated: Option<bool> = sqlx::query_scalar(
+                        "SELECT can_approve_on_behalf($1, $2)"
+                    )
+                    .bind(&claims.sub)
+                    .bind(approver)
+                    .fetch_optional(&data.db_pool)
+                    .await
+                    .ok()
+                    .flatten();
+                    if delegated.unwrap_or(false) {
+                        has_delegation = true;
+                        break;
+                    }
+                }
+                has_delegation
+            } else {
+                // If no required approvers yet, check if user has policy:write permission
+                let has_permission: Option<bool> = sqlx::query_scalar(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM user_permissions 
+                        WHERE user_id = $1 AND permission = 'policy:write'
+                    )"
+                )
+                .bind(&claims.sub)
+                .fetch_optional(&data.db_pool)
+                .await
+                .ok()
+                .flatten();
+                has_permission.unwrap_or(false)
+            };
+
+            if !can_approve.unwrap_or(false) && !has_delegated_authority {
+                return HttpResponse::Forbidden().json(serde_json::json!({
+                    "error": "APPROVAL_NOT_AUTHORIZED",
+                    "message": "You do not have permission to approve this policy"
+                }));
+            }
+
+            // Record approval (store original approver if delegated)
+            let original_approver = if has_delegated_authority && !required_approvers.is_empty() {
+                required_approvers.first().cloned()
+            } else {
+                None
+            };
+
+            let _ = sqlx::query(
+                "INSERT INTO policy_approvals (policy_version_id, approver_id, action, notes)
+                 VALUES ($1, $2, 'APPROVED', $3)
+                 ON CONFLICT (policy_version_id, approver_id) 
+                 DO UPDATE SET action = 'APPROVED', notes = $3, approved_at = CURRENT_TIMESTAMP"
+            )
+            .bind(policy_id)
+            .bind(&claims.sub)
+            .bind(&approval_req.notes)
+            .execute(&data.db_pool)
+            .await;
+            
+            // Get approval count
+            let approval_count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM policy_approvals 
+                 WHERE policy_version_id = $1 AND action = 'APPROVED'"
+            )
+            .bind(policy_id)
+            .fetch_one(&data.db_pool)
+            .await
+            .unwrap_or(0);
+            
+            // Check if can activate
+            let can_activate: Option<bool> = sqlx::query_scalar(
+                "SELECT can_activate_policy($1)"
+            )
+            .bind(policy_id)
+            .fetch_optional(&data.db_pool)
+            .await
+            .ok()
+            .flatten();
+            
+            let status = if can_activate.unwrap_or(false) {
+                "APPROVED"
+            } else {
+                "PENDING"
+            };
+            
+            // Update policy approval status if fully approved
+            if can_activate.unwrap_or(false) {
+                let _ = sqlx::query(
+                    "UPDATE policy_versions 
+                     SET approval_status = 'APPROVED'
+                     WHERE id = $1"
+                )
+                .bind(policy_id)
+                .execute(&data.db_pool)
+                .await;
+
+                // Send notification to policy creator that approval is complete
+                let policy_creator: Option<String> = sqlx::query_scalar(
+                    "SELECT created_by FROM policy_versions WHERE id = $1"
+                )
+                .bind(policy_id)
+                .fetch_optional(&data.db_pool)
+                .await
+                .ok()
+                .flatten();
+
+                if let Some(creator) = policy_creator {
+                    let db_pool_clone = data.db_pool.clone();
+                    let policy_id_clone = policy_id;
+                    let required_count = p.approval_required_count;
+                    let received_count = approval_count;
+                    tokio::spawn(async move {
+                        let notification_service = crate::integration::notifications::NotificationService::new();
+                        let request = crate::integration::notifications::NotificationRequest {
+                            user_id: creator,
+                            notification_type: crate::integration::notifications::NotificationType::HighRiskAiAction,
+                            channel: crate::integration::notifications::NotificationChannel::Email,
+                            subject: Some("Policy Approved - Ready to Activate".to_string()),
+                            body: format!(
+                                "Your policy has received all required approvals and is ready to be activated.\n\n\
+                                Policy ID: {}\n\
+                                Required Approvals: {}\n\
+                                Received Approvals: {}\n\n\
+                                You can now activate the policy from the dashboard.",
+                                policy_id_clone, required_count, received_count
+                            ),
+                            language: Some("en".to_string()),
+                            related_entity_type: Some("POLICY".to_string()),
+                            related_entity_id: Some(policy_id_clone.to_string()),
+                        };
+                        let _ = notification_service.send_notification(&db_pool_clone, request).await;
+                    });
+                }
+            } else {
+                // Send notification to other approvers that approval is needed
+                let existing_approvers: Vec<String> = sqlx::query_scalar(
+                    "SELECT DISTINCT approver_id FROM policy_approvals WHERE policy_version_id = $1"
+                )
+                .bind(policy_id)
+                .fetch_all(&data.db_pool)
+                .await
+                .unwrap_or_default();
+
+                let remaining_approvals = p.approval_required_count - approval_count as i32;
+                if remaining_approvals > 0 {
+                    // Get list of potential approvers (users with policy:write permission)
+                    let potential_approvers: Vec<String> = sqlx::query_scalar(
+                        "SELECT DISTINCT user_id FROM user_permissions WHERE permission = 'policy:write'"
+                    )
+                    .fetch_all(&data.db_pool)
+                    .await
+                    .unwrap_or_default();
+
+                    let approvers_set: std::collections::HashSet<String> = existing_approvers.iter()
+                        .cloned()
+                        .collect();
+
+                    for approver in potential_approvers {
+                        if !approvers_set.contains(&approver) && approver != claims.sub {
+                            let db_pool_clone = data.db_pool.clone();
+                            let policy_id_clone = policy_id;
+                            let remaining = remaining_approvals;
+                            let required_count = p.approval_required_count;
+                            tokio::spawn(async move {
+                                let notification_service = crate::integration::notifications::NotificationService::new();
+                                let request = crate::integration::notifications::NotificationRequest {
+                                    user_id: approver,
+                                    notification_type: crate::integration::notifications::NotificationType::HighRiskAiAction,
+                                    channel: crate::integration::notifications::NotificationChannel::Email,
+                                    subject: Some("Policy Approval Required".to_string()),
+                                    body: format!(
+                                        "A policy requires your approval.\n\n\
+                                        Policy ID: {}\n\
+                                        Required Approvals: {}\n\
+                                        Remaining Approvals Needed: {}\n\n\
+                                        Please review and approve or reject the policy from the Approval Queue dashboard.",
+                                        policy_id_clone, required_count, remaining
+                                    ),
+                                    language: Some("en".to_string()),
+                                    related_entity_type: Some("POLICY".to_string()),
+                                    related_entity_id: Some(policy_id_clone.to_string()),
+                                };
+                                let _ = notification_service.send_notification(&db_pool_clone, request).await;
+                            });
+                        }
+                    }
+                }
+            }
+            
+            HttpResponse::Ok().json(PolicyApprovalResponse {
+                policy_id,
+                approver_id: claims.sub,
+                approval_count,
+                required_count: p.approval_required_count,
+                can_activate: can_activate.unwrap_or(false),
+                status: status.to_string(),
+            })
+        }
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "POLICY_NOT_FOUND",
+            "message": "Policy not found"
+        }))
+    }
+}
+
+/// Reject a policy (for multi-step approval workflow)
+#[derive(Deserialize, ToSchema)]
+pub struct PolicyRejectionRequest {
+    #[schema(example = "Rejected due to high risk")]
+    pub reason: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/policies/{policy_id}/reject",
+    tag = "Policy Management",
+    params(
+        ("policy_id" = Uuid, Path, description = "Policy ID"),
+    ),
+    request_body = PolicyRejectionRequest,
+    responses(
+        (status = 200, description = "Policy rejected"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn reject_policy(
+    policy_id: web::Path<Uuid>,
+    req: web::Json<PolicyRejectionRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id = policy_id.into_inner();
+    let rejection_req = req.into_inner();
+    
+    // Record rejection
+    let _ = sqlx::query(
+        "INSERT INTO policy_approvals (policy_version_id, approver_id, action, notes)
+         VALUES ($1, $2, 'REJECTED', $3)
+         ON CONFLICT (policy_version_id, approver_id) 
+         DO UPDATE SET action = 'REJECTED', notes = $3, approved_at = CURRENT_TIMESTAMP"
+    )
+    .bind(policy_id)
+    .bind(&claims.sub)
+    .bind(&rejection_req.reason)
+    .execute(&data.db_pool)
+    .await;
+    
+    // Update policy approval status
+    let _ = sqlx::query(
+        "UPDATE policy_versions 
+         SET approval_status = 'REJECTED', approval_notes = $1
+         WHERE id = $2"
+    )
+    .bind(&rejection_req.reason)
+    .bind(policy_id)
+    .execute(&data.db_pool)
+    .await;
+    
+    HttpResponse::Ok().json(serde_json::json!({
+        "status": "REJECTED",
+        "message": "Policy rejected",
+        "rejected_by": claims.sub
+    }))
+}
+
+// ========== VERIDION TPRM INTEGRATION ==========
+
+/// Get vendor risk score from Veridion TPRM
+#[derive(Serialize, ToSchema)]
+pub struct VendorRiskScoreResponse {
+    pub vendor_domain: String,
+    pub vendor_name: Option<String>,
+    pub risk_score: f64,
+    pub risk_level: String,
+    pub compliance_status: String,
+    pub country_code: Option<String>,
+    pub industry_sector: Option<String>,
+    pub last_updated: DateTime<Utc>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/vendors/{vendor_domain}/risk-score",
+    tag = "Veridion TPRM",
+    params(
+        ("vendor_domain" = String, Path, description = "Vendor domain"),
+    ),
+    responses(
+        (status = 200, description = "Vendor risk score", body = VendorRiskScoreResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_vendor_risk_score(
+    vendor_domain: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "tprm", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let vendor_domain = vendor_domain.into_inner();
+    let tprm_service = crate::integration::veridion_tprm::VeridionTPRMService::new(
+        std::env::var("VERIDION_TPRM_API_KEY").ok()
+    );
+
+    // Fetch risk score
+    match tprm_service.fetch_vendor_risk_score(&vendor_domain).await {
+        Ok(risk_score) => {
+            // Store in database
+            let _ = tprm_service.store_vendor_risk_score(&data.db_pool, &risk_score).await;
+
+            HttpResponse::Ok().json(VendorRiskScoreResponse {
+                vendor_domain: risk_score.vendor_domain,
+                vendor_name: risk_score.vendor_name,
+                risk_score: risk_score.risk_score,
+                risk_level: risk_score.risk_level,
+                compliance_status: risk_score.compliance_status,
+                country_code: risk_score.country_code,
+                industry_sector: risk_score.industry_sector,
+                last_updated: Utc::now(),
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "TPRM_FETCH_FAILED",
+            "message": format!("Failed to fetch vendor risk score: {}", e)
+        }))
+    }
+}
+
+/// Enrich asset with TPRM data
+#[utoipa::path(
+    post,
+    path = "/assets/{asset_id}/enrich-tprm",
+    tag = "TPRM Integration",
+    responses(
+        (status = 200, description = "Asset enriched with TPRM data"),
+        (status = 404, description = "Asset not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn enrich_asset_tprm(
+    asset_id: web::Path<Uuid>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "tprm", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let asset_id = asset_id.into_inner();
+    let tprm_service = crate::integration::veridion_tprm::VeridionTPRMService::new(
+        std::env::var("VERIDION_TPRM_API_KEY").ok()
+    );
+
+    match tprm_service.enrich_asset_with_tprm(&data.db_pool, asset_id).await {
+        Ok(enriched_data) => {
+            HttpResponse::Ok().json(serde_json::json!({
+                "asset_id": asset_id,
+                "vendors_enriched": enriched_data.len(),
+                "vendor_risk_scores": enriched_data.iter().map(|(domain, score)| {
+                    serde_json::json!({
+                        "vendor_domain": domain,
+                        "risk_score": score.risk_score,
+                        "risk_level": score.risk_level,
+                        "compliance_status": score.compliance_status
+                    })
+                }).collect::<Vec<_>>()
+            }))
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "TPRM_ENRICHMENT_FAILED",
+            "message": format!("Failed to enrich asset: {}", e)
+        }))
+    }
+}
+
+/// Auto-generate policies from TPRM data
+#[derive(Deserialize, ToSchema)]
+pub struct AutoGenerateTPRMPolicyRequest {
+    #[schema(example = "asset-uuid")]
+    pub asset_id: Option<Uuid>,
+    #[schema(example = "openai.com")]
+    pub vendor_domain: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TPRMPolicyRecommendationsResponse {
+    pub recommendations: Vec<TPRMPolicyRecommendation>,
+    pub total_count: usize,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct TPRMPolicyRecommendation {
+    pub vendor_domain: String,
+    pub recommendation_type: String,
+    pub risk_reason: String,
+    pub suggested_policy_config: serde_json::Value,
+    pub priority: i32,
+}
+
+#[utoipa::path(
+    post,
+    path = "/policies/auto-generate-from-tprm",
+    tag = "Veridion TPRM",
+    request_body = AutoGenerateTPRMPolicyRequest,
+    responses(
+        (status = 200, description = "Policies generated"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn auto_generate_tprm_policies(
+    req: web::Json<AutoGenerateTPRMPolicyRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "tprm", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let req_data = req.into_inner();
+    let tprm_service = crate::integration::veridion_tprm::VeridionTPRMService::new(
+        std::env::var("VERIDION_TPRM_API_KEY").ok()
+    );
+
+    if let Some(asset_id) = req_data.asset_id {
+        match tprm_service.generate_tprm_policy_recommendations(&data.db_pool, asset_id).await {
+            Ok(recommendations) => {
+                // Store recommendations in database
+                for rec in &recommendations {
+                    let _ = sqlx::query(
+                        "INSERT INTO tprm_policy_recommendations (
+                            asset_id, vendor_domain, recommendation_type,
+                            risk_reason, suggested_policy_config, priority
+                        ) VALUES ($1, $2, $3, $4, $5, $6)"
+                    )
+                    .bind(asset_id)
+                    .bind(&rec.vendor_domain)
+                    .bind(&rec.recommendation_type)
+                    .bind(&rec.risk_reason)
+                    .bind(&rec.suggested_policy_config)
+                    .bind(rec.priority)
+                    .execute(&data.db_pool)
+                    .await;
+                }
+
+                HttpResponse::Ok().json(TPRMPolicyRecommendationsResponse {
+                    recommendations: recommendations.iter().map(|r| TPRMPolicyRecommendation {
+                        vendor_domain: r.vendor_domain.clone(),
+                        recommendation_type: r.recommendation_type.clone(),
+                        risk_reason: r.risk_reason.clone(),
+                        suggested_policy_config: r.suggested_policy_config.clone(),
+                        priority: r.priority,
+                    }).collect(),
+                    total_count: recommendations.len(),
+                })
+            }
+            Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "TPRM_GENERATION_FAILED",
+                "message": format!("Failed to generate recommendations: {}", e)
+            }))
+        }
+    } else {
+        HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "MISSING_ASSET_ID",
+            "message": "asset_id is required"
+        }))
+    }
+}
+
+// ========== EXECUTIVE ASSURANCE REPORTING ==========
+
+/// Get executive compliance scorecard (Board-level reporting)
+#[derive(Serialize, ToSchema)]
+pub struct ExecutiveScorecardResponse {
+    pub report_date: String,
+    pub compliance_score: f64,
+    pub risk_level: String,
+    pub liability_protection_status: String,
+    pub nis2_readiness: f64,
+    pub dora_compliance: bool,
+    pub total_assets: i32,
+    pub compliant_assets: i32,
+    pub non_compliant_assets: i32,
+    pub critical_issues_count: i32,
+    pub high_risk_issues_count: i32,
+    pub last_incident_date: Option<String>,
+    pub days_since_last_incident: Option<i32>,
+    pub executive_summary: String,
+    pub recommendations: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/reports/executive-assurance",
+    tag = "Executive Assurance",
+    responses(
+        (status = 200, description = "Executive assurance report", body = ExecutiveScorecardResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_executive_assurance(
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "reports", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let report_date = query.get("report_date")
+        .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+
+    match crate::core::executive_assurance::ExecutiveAssuranceService::generate_scorecard(
+        &data.db_pool,
+        report_date,
+    ).await {
+        Ok(scorecard) => {
+            // Generate recommendations
+            let mut recommendations = Vec::new();
+            
+            if scorecard.compliance_score < 90.0 {
+                recommendations.push(format!(
+                    "Improve compliance score from {:.1}% to 90%+ to achieve PROTECTED liability status",
+                    scorecard.compliance_score
+                ));
+            }
+            
+            if scorecard.nis2_readiness < 90.0 {
+                recommendations.push(format!(
+                    "Increase NIS2 readiness from {:.1}% to 90%+ to meet Article 20 requirements",
+                    scorecard.nis2_readiness
+                ));
+            }
+            
+            if scorecard.critical_issues_count > 0 {
+                recommendations.push(format!(
+                    "Address {} critical issue(s) immediately to reduce liability exposure",
+                    scorecard.critical_issues_count
+                ));
+            }
+            
+            if !scorecard.dora_compliance {
+                recommendations.push("Enable DORA compliance tracking to meet Article 28 requirements".to_string());
+            }
+
+            HttpResponse::Ok().json(ExecutiveScorecardResponse {
+                report_date: scorecard.report_date.to_string(),
+                compliance_score: scorecard.compliance_score,
+                risk_level: scorecard.risk_level,
+                liability_protection_status: scorecard.liability_protection_status,
+                nis2_readiness: scorecard.nis2_readiness,
+                dora_compliance: scorecard.dora_compliance,
+                total_assets: scorecard.total_assets,
+                compliant_assets: scorecard.compliant_assets,
+                non_compliant_assets: scorecard.non_compliant_assets,
+                critical_issues_count: scorecard.critical_issues_count,
+                high_risk_issues_count: scorecard.high_risk_issues_count,
+                last_incident_date: scorecard.last_incident_date.map(|dt| dt.to_rfc3339()),
+                days_since_last_incident: scorecard.days_since_last_incident,
+                executive_summary: scorecard.executive_summary,
+                recommendations,
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "SCORECARD_GENERATION_FAILED",
+            "message": format!("Failed to generate scorecard: {}", e)
+        }))
+    }
+}
+
+/// Get compliance KPIs
+#[derive(Serialize, ToSchema)]
+pub struct ComplianceKPIResponse {
+    pub kpi_name: String,
+    pub kpi_value: f64,
+    pub kpi_unit: String,
+    pub kpi_category: String,
+    pub target_value: Option<f64>,
+    pub status: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/reports/compliance-kpis",
+    tag = "Executive Assurance",
+    responses(
+        (status = 200, description = "Compliance KPIs", body = ComplianceKPIResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_compliance_kpis(
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "reports", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let category = query.get("category").map(|s| s.as_str());
+
+    match crate::core::executive_assurance::ExecutiveAssuranceService::get_compliance_kpis(
+        &data.db_pool,
+        category,
+    ).await {
+        Ok(kpis) => {
+            HttpResponse::Ok().json(kpis.iter().map(|kpi| ComplianceKPIResponse {
+                kpi_name: kpi.kpi_name.clone(),
+                kpi_value: kpi.kpi_value,
+                kpi_unit: kpi.kpi_unit.clone(),
+                kpi_category: kpi.kpi_category.clone(),
+                target_value: kpi.target_value,
+                status: kpi.status.clone(),
+            }).collect::<Vec<_>>())
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "KPI_FETCH_FAILED",
+            "message": format!("Failed to fetch KPIs: {}", e)
+        }))
+    }
+}
+
+// ========== POLICY HEALTH DASHBOARD ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct PolicyHealthDashboard {
+    pub policies: Vec<PolicyHealthSummary>,
+    pub total_policies: i64,
+    pub healthy_policies: i64,
+    pub degraded_policies: i64,
+    pub critical_policies: i64,
+    pub overall_health_score: f64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PolicyHealthSummary {
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub policy_type: String,
+    pub health_status: String,
+    pub success_rate: f64,
+    pub error_rate: f64,
+    pub total_requests: i64,
+    pub avg_latency_ms: Option<f64>,
+    pub circuit_breaker_state: Option<String>,
+    pub last_updated: DateTime<Utc>,
+}
+
+/// Get policy health dashboard (all policies)
+#[utoipa::path(
+    get,
+    path = "/analytics/policy-health",
+    tag = "Policy Monitoring",
+    responses(
+        (status = 200, description = "Policy health dashboard", body = PolicyHealthDashboard),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_policy_health_dashboard(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "analytics", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let now = chrono::Utc::now();
+    let window_start = now - chrono::Duration::minutes(10);
+
+    #[derive(sqlx::FromRow)]
+    struct PolicyRow {
+        id: Uuid,
+        policy_name: String,
+        policy_type: String,
+        circuit_breaker_state: Option<String>,
+    }
+
+    let policies: Vec<PolicyRow> = sqlx::query_as(
+        "SELECT id, policy_name, policy_type, circuit_breaker_state
+         FROM policy_versions
+         WHERE is_active = true
+         ORDER BY policy_name"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let total_policies_count = policies.len() as i64;
+    let mut policy_summaries = Vec::new();
+    let mut healthy_count = 0;
+    let mut degraded_count = 0;
+    let mut critical_count = 0;
+    let mut total_health_score = 0.0;
+
+    for policy in policies {
+        // Get metrics for this policy
+        #[derive(sqlx::FromRow)]
+        struct MetricsRow {
+            total_requests: Option<i64>,
+            successful_requests: Option<i64>,
+            failed_requests: Option<i64>,
+            blocked_requests: Option<i64>,
+        }
+
+        let metrics: MetricsRow = sqlx::query_as(
+            "SELECT 
+                SUM(total_requests) as total_requests,
+                SUM(successful_requests) as successful_requests,
+                SUM(failed_requests) as failed_requests,
+                SUM(blocked_requests) as blocked_requests
+             FROM canary_metrics
+             WHERE policy_version_id = $1
+               AND window_start >= $2"
+        )
+        .bind(policy.id)
+        .bind(window_start)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(MetricsRow {
+            total_requests: Some(0),
+            successful_requests: Some(0),
+            failed_requests: Some(0),
+            blocked_requests: Some(0),
+        });
+
+        let total = metrics.total_requests.unwrap_or(0);
+        let successful = metrics.successful_requests.unwrap_or(0);
+        let failed = metrics.failed_requests.unwrap_or(0);
+        let blocked = metrics.blocked_requests.unwrap_or(0);
+
+        let success_rate = if total > 0 {
+            (successful as f64 / total as f64) * 100.0
+        } else {
+            100.0
+        };
+
+        let error_rate = if total > 0 {
+            ((failed + blocked) as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // Get latency
+        let avg_latency: Option<f64> = sqlx::query_scalar(
+            "SELECT AVG(EXTRACT(EPOCH FROM (completed_at - timestamp)) * 1000)
+             FROM compliance_records
+             WHERE policy_version_id = $1
+               AND timestamp >= $2
+               AND completed_at IS NOT NULL"
+        )
+        .bind(policy.id)
+        .bind(window_start)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        // Determine health status
+        let health_status = if error_rate >= 10.0 || policy.circuit_breaker_state.as_deref() == Some("OPEN") {
+            critical_count += 1;
+            "CRITICAL"
+        } else if error_rate >= 5.0 {
+            degraded_count += 1;
+            "DEGRADED"
+        } else {
+            healthy_count += 1;
+            "HEALTHY"
+        };
+
+        // Trigger webhook alerts for degraded/critical policies
+        if health_status == "CRITICAL" || health_status == "DEGRADED" {
+            let webhook_data = serde_json::json!({
+                "policy_id": policy.id,
+                "policy_name": policy.policy_name,
+                "policy_type": policy.policy_type,
+                "health_status": health_status,
+                "success_rate": success_rate,
+                "error_rate": error_rate,
+                "total_requests": total,
+                "avg_latency_ms": avg_latency,
+                "circuit_breaker_state": policy.circuit_breaker_state,
+            });
+            
+            let event_type = if health_status == "CRITICAL" {
+                "policy.health.critical"
+            } else {
+                "policy.health.degraded"
+            };
+            
+            trigger_webhook_event(&data.db_pool, event_type, webhook_data).await;
+        }
+
+        total_health_score += success_rate;
+
+        policy_summaries.push(PolicyHealthSummary {
+            policy_id: policy.id,
+            policy_name: policy.policy_name,
+            policy_type: policy.policy_type,
+            health_status: health_status.to_string(),
+            success_rate,
+            error_rate,
+            total_requests: total,
+            avg_latency_ms: avg_latency,
+            circuit_breaker_state: policy.circuit_breaker_state,
+            last_updated: now,
+        });
+    }
+
+    let overall_health_score = if !policy_summaries.is_empty() {
+        total_health_score / policy_summaries.len() as f64
+    } else {
+        100.0
+    };
+
+    HttpResponse::Ok().json(PolicyHealthDashboard {
+        policies: policy_summaries,
+        total_policies: total_policies_count,
+        healthy_policies: healthy_count,
+        degraded_policies: degraded_count,
+        critical_policies: critical_count,
+        overall_health_score,
+    })
+}
+
+// ========== POLICY HEALTH TRENDS ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct PolicyHealthTrends {
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub trends: Vec<HealthTrendPoint>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct HealthTrendPoint {
+    pub timestamp: DateTime<Utc>,
+    pub success_rate: f64,
+    pub error_rate: f64,
+    pub total_requests: i64,
+    pub avg_latency_ms: Option<f64>,
+    pub health_status: String,
+}
+
+/// Get policy health trends (historical data)
+#[utoipa::path(
+    get,
+    path = "/analytics/policy-health/{policy_id}/trends",
+    tag = "Policy Monitoring",
+    params(
+        ("policy_id" = Uuid, Path, description = "Policy ID"),
+        ("time_range" = Option<i64>, Query, description = "Time range in hours (default: 24)"),
+    ),
+    responses(
+        (status = 200, description = "Policy health trends", body = PolicyHealthTrends),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_policy_health_trends(
+    policy_id: web::Path<Uuid>,
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "analytics", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id = policy_id.into_inner();
+    let time_range_hours = query.get("time_range")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(24);
+
+    let window_start = Utc::now() - chrono::Duration::hours(time_range_hours);
+
+    // Get policy name
+    let policy_name: Option<String> = sqlx::query_scalar(
+        "SELECT policy_name FROM policy_versions WHERE id = $1"
+    )
+    .bind(policy_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    if policy_name.is_none() {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "POLICY_NOT_FOUND"
+        }));
+    }
+
+    // Get hourly trends
+    #[derive(sqlx::FromRow)]
+    struct TrendRow {
+        hour_bucket: DateTime<Utc>,
+        total_requests: i64,
+        successful_requests: i64,
+        failed_requests: i64,
+        blocked_requests: i64,
+        avg_latency: Option<f64>,
+    }
+
+    let trends_data: Vec<TrendRow> = sqlx::query_as(
+        "SELECT 
+            date_trunc('hour', window_start) as hour_bucket,
+            SUM(total_requests) as total_requests,
+            SUM(successful_requests) as successful_requests,
+            SUM(failed_requests) as failed_requests,
+            SUM(blocked_requests) as blocked_requests,
+            AVG(avg_latency_ms) as avg_latency
+         FROM canary_metrics
+         WHERE policy_version_id = $1
+           AND window_start >= $2
+         GROUP BY hour_bucket
+         ORDER BY hour_bucket ASC"
+    )
+    .bind(policy_id)
+    .bind(window_start)
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let trends: Vec<HealthTrendPoint> = trends_data.into_iter().map(|row| {
+        let total = row.total_requests;
+        let successful = row.successful_requests;
+        let failed = row.failed_requests;
+        let blocked = row.blocked_requests;
+
+        let success_rate = if total > 0 {
+            (successful as f64 / total as f64) * 100.0
+        } else {
+            100.0
+        };
+
+        let error_rate = if total > 0 {
+            ((failed + blocked) as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let health_status = if error_rate >= 10.0 {
+            "CRITICAL"
+        } else if error_rate >= 5.0 {
+            "DEGRADED"
+        } else {
+            "HEALTHY"
+        };
+
+        HealthTrendPoint {
+            timestamp: row.hour_bucket,
+            success_rate,
+            error_rate,
+            total_requests: total,
+            avg_latency_ms: row.avg_latency,
+            health_status: health_status.to_string(),
+        }
+    }).collect();
+
+    HttpResponse::Ok().json(PolicyHealthTrends {
+        policy_id,
+        policy_name: policy_name.unwrap(),
+        trends,
+    })
+}
+
+// ========== APPROVAL QUEUE DASHBOARD ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct ApprovalQueueDashboard {
+    pub pending_approvals: Vec<PendingApproval>,
+    pub approved_policies: Vec<ApprovedPolicy>,
+    pub rejected_policies: Vec<RejectedPolicy>,
+    pub total_pending: i64,
+    pub total_approved: i64,
+    pub total_rejected: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct PendingApproval {
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub policy_type: String,
+    pub created_at: DateTime<Utc>,
+    pub created_by: Option<String>,
+    pub approval_count: i64,
+    pub required_count: i32,
+    pub remaining_approvals: i32,
+    pub approvers: Vec<ApproverInfo>,
+    pub policy_config: Option<serde_json::Value>,
+    pub impact_analysis: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ApprovedPolicy {
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub approved_at: DateTime<Utc>,
+    pub approvers: Vec<ApproverInfo>,
+    pub can_activate: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RejectedPolicy {
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub rejected_at: DateTime<Utc>,
+    pub rejected_by: String,
+    pub rejection_reason: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ApproverInfo {
+    pub approver_id: String,
+    pub action: String, // APPROVED, REJECTED, PENDING
+    pub approved_at: Option<DateTime<Utc>>,
+    pub notes: Option<String>,
+}
+
+/// Get approval queue dashboard
+#[utoipa::path(
+    get,
+    path = "/approvals/queue",
+    tag = "Policy Approvals",
+    responses(
+        (status = 200, description = "Approval queue dashboard", body = ApprovalQueueDashboard),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_approval_queue(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    // Get pending approvals
+    #[derive(sqlx::FromRow)]
+    struct PendingPolicyRow {
+        id: Uuid,
+        policy_name: String,
+        policy_type: String,
+        created_at: DateTime<Utc>,
+        created_by: Option<String>,
+        approval_required_count: i32,
+        policy_config: Option<serde_json::Value>,
+    }
+
+    let pending_policies: Vec<PendingPolicyRow> = sqlx::query_as(
+        "SELECT id, policy_name, policy_type, created_at, created_by, 
+                approval_required_count, policy_config
+         FROM policy_versions
+         WHERE requires_approval = true 
+           AND approval_status = 'PENDING'
+         ORDER BY created_at DESC"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let mut pending_approvals = Vec::new();
+    for policy in pending_policies {
+        // Get approval count
+        let approval_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM policy_approvals 
+             WHERE policy_version_id = $1 AND action = 'APPROVED'"
+        )
+        .bind(policy.id)
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(0);
+
+        // Get approvers
+        #[derive(sqlx::FromRow)]
+        struct ApproverRow {
+            approver_id: String,
+            action: String,
+            approved_at: Option<DateTime<Utc>>,
+            notes: Option<String>,
+        }
+
+        let approvers_data: Vec<ApproverRow> = sqlx::query_as(
+            "SELECT approver_id, action, approved_at, notes
+             FROM policy_approvals
+             WHERE policy_version_id = $1
+             ORDER BY approved_at DESC NULLS LAST"
+        )
+        .bind(policy.id)
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+        let approvers: Vec<ApproverInfo> = approvers_data.into_iter().map(|a| {
+            ApproverInfo {
+                approver_id: a.approver_id,
+                action: a.action,
+                approved_at: a.approved_at,
+                notes: a.notes,
+            }
+        }).collect();
+
+        // Get impact analysis if available
+        let impact_analysis: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT impact_analysis FROM policy_impact_cache WHERE policy_version_id = $1"
+        )
+        .bind(policy.id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        pending_approvals.push(PendingApproval {
+            policy_id: policy.id,
+            policy_name: policy.policy_name,
+            policy_type: policy.policy_type,
+            created_at: policy.created_at,
+            created_by: policy.created_by,
+            approval_count,
+            required_count: policy.approval_required_count,
+            remaining_approvals: policy.approval_required_count - approval_count as i32,
+            approvers,
+            policy_config: policy.policy_config,
+            impact_analysis,
+        });
+    }
+
+    // Get approved policies
+    #[derive(sqlx::FromRow)]
+    struct ApprovedPolicyRow {
+        id: Uuid,
+        policy_name: String,
+        approval_status: String,
+    }
+
+    let approved_policies_data: Vec<ApprovedPolicyRow> = sqlx::query_as(
+        "SELECT id, policy_name, approval_status
+         FROM policy_versions
+         WHERE requires_approval = true 
+           AND approval_status = 'APPROVED'
+         ORDER BY updated_at DESC
+         LIMIT 50"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let mut approved_policies = Vec::new();
+    for policy in approved_policies_data {
+        // Get approvers
+        #[derive(sqlx::FromRow)]
+        struct ApproverRow {
+            approver_id: String,
+            action: String,
+            approved_at: Option<DateTime<Utc>>,
+            notes: Option<String>,
+        }
+
+        let approvers_data: Vec<ApproverRow> = sqlx::query_as(
+            "SELECT approver_id, action, approved_at, notes
+             FROM policy_approvals
+             WHERE policy_version_id = $1 AND action = 'APPROVED'
+             ORDER BY approved_at DESC"
+        )
+        .bind(policy.id)
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+        let approvers: Vec<ApproverInfo> = approvers_data.into_iter().map(|a| {
+            ApproverInfo {
+                approver_id: a.approver_id,
+                action: a.action,
+                approved_at: a.approved_at,
+                notes: a.notes,
+            }
+        }).collect();
+
+        let approved_at = approvers.first()
+            .and_then(|a| a.approved_at)
+            .unwrap_or_else(|| Utc::now());
+
+        approved_policies.push(ApprovedPolicy {
+            policy_id: policy.id,
+            policy_name: policy.policy_name,
+            approved_at,
+            approvers,
+            can_activate: !policy.approval_status.is_empty(),
+        });
+    }
+
+    // Get rejected policies
+    #[derive(sqlx::FromRow)]
+    struct RejectedPolicyRow {
+        id: Uuid,
+        policy_name: String,
+        approval_notes: Option<String>,
+    }
+
+    let rejected_policies_data: Vec<RejectedPolicyRow> = sqlx::query_as(
+        "SELECT id, policy_name, approval_notes
+         FROM policy_versions
+         WHERE requires_approval = true 
+           AND approval_status = 'REJECTED'
+         ORDER BY updated_at DESC
+         LIMIT 50"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let mut rejected_policies = Vec::new();
+    for policy in rejected_policies_data {
+        // Get rejection info
+        #[derive(sqlx::FromRow)]
+        struct RejectionRow {
+            approver_id: String,
+            approved_at: Option<DateTime<Utc>>,
+            notes: Option<String>,
+        }
+
+        let rejection: Option<RejectionRow> = sqlx::query_as(
+            "SELECT approver_id, approved_at, notes
+             FROM policy_approvals
+             WHERE policy_version_id = $1 AND action = 'REJECTED'
+             ORDER BY approved_at DESC
+             LIMIT 1"
+        )
+        .bind(policy.id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        if let Some(rej) = rejection {
+            rejected_policies.push(RejectedPolicy {
+                policy_id: policy.id,
+                policy_name: policy.policy_name,
+                rejected_at: rej.approved_at.unwrap_or_else(|| Utc::now()),
+                rejected_by: rej.approver_id,
+                rejection_reason: rej.notes.or(policy.approval_notes).unwrap_or_else(|| "No reason provided".to_string()),
+            });
+        }
+    }
+
+    let total_pending_count = pending_approvals.len() as i64;
+    let total_approved_count = approved_policies.len() as i64;
+    let total_rejected_count = rejected_policies.len() as i64;
+
+    HttpResponse::Ok().json(ApprovalQueueDashboard {
+        pending_approvals,
+        approved_policies,
+        rejected_policies,
+        total_pending: total_pending_count,
+        total_approved: total_approved_count,
+        total_rejected: total_rejected_count,
+    })
+}
+
+// ========== APPROVAL HISTORY ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct ApprovalHistory {
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub history: Vec<ApprovalHistoryEntry>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ApprovalHistoryEntry {
+    pub approver_id: String,
+    pub action: String,
+    pub timestamp: DateTime<Utc>,
+    pub notes: Option<String>,
+}
+
+/// Get approval history for a policy
+#[utoipa::path(
+    get,
+    path = "/approvals/{policy_id}/history",
+    tag = "Policy Approvals",
+    params(
+        ("policy_id" = Uuid, Path, description = "Policy ID"),
+    ),
+    responses(
+        (status = 200, description = "Approval history", body = ApprovalHistory),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_approval_history(
+    policy_id: web::Path<Uuid>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id = policy_id.into_inner();
+
+    // Get policy name
+    let policy_name: Option<String> = sqlx::query_scalar(
+        "SELECT policy_name FROM policy_versions WHERE id = $1"
+    )
+    .bind(policy_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    if policy_name.is_none() {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "POLICY_NOT_FOUND"
+        }));
+    }
+
+    // Get approval history
+    #[derive(sqlx::FromRow)]
+    struct HistoryRow {
+        approver_id: String,
+        action: String,
+        approved_at: Option<DateTime<Utc>>,
+        notes: Option<String>,
+    }
+
+    let history_data: Vec<HistoryRow> = sqlx::query_as(
+        "SELECT approver_id, action, approved_at, notes
+         FROM policy_approvals
+         WHERE policy_version_id = $1
+         ORDER BY approved_at DESC NULLS LAST, created_at DESC"
+    )
+    .bind(policy_id)
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let history: Vec<ApprovalHistoryEntry> = history_data.into_iter().map(|h| {
+        ApprovalHistoryEntry {
+            approver_id: h.approver_id,
+            action: h.action,
+            timestamp: h.approved_at.unwrap_or_else(|| Utc::now()),
+            notes: h.notes,
+        }
+    }).collect();
+
+    HttpResponse::Ok().json(ApprovalHistory {
+        policy_id,
+        policy_name: policy_name.unwrap(),
+        history,
+    })
+}
+
+// ========== ROLLBACK HISTORY DASHBOARD ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct RollbackHistoryDashboard {
+    pub rollbacks: Vec<RollbackHistoryEntry>,
+    pub total_rollbacks: i64,
+    pub auto_rollbacks: i64,
+    pub manual_rollbacks: i64,
+    pub rollback_reasons: HashMap<String, i64>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct RollbackHistoryEntry {
+    pub rollback_id: Uuid,
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub rollback_type: String, // AUTO, MANUAL
+    pub from_version: Option<i32>,
+    pub to_version: Option<i32>,
+    pub from_percentage: Option<i32>,
+    pub to_percentage: Option<i32>,
+    pub success_rate: Option<f64>,
+    pub error_rate: Option<f64>,
+    pub reason: String,
+    pub performed_by: Option<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Get rollback history dashboard
+#[utoipa::path(
+    get,
+    path = "/analytics/rollback-history",
+    tag = "Policy Management",
+    params(
+        ("policy_id" = Option<Uuid>, Query, description = "Filter by policy ID"),
+        ("time_range" = Option<i64>, Query, description = "Time range in days (default: 30)"),
+    ),
+    responses(
+        (status = 200, description = "Rollback history dashboard", body = RollbackHistoryDashboard),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_rollback_history(
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "analytics", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let policy_id_filter: Option<Uuid> = query.get("policy_id")
+        .and_then(|s| Uuid::parse_str(s).ok());
+    
+    let time_range_days = query.get("time_range")
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(30);
+
+    let window_start = Utc::now() - chrono::Duration::days(time_range_days);
+
+    // Get canary rollback history
+    #[derive(sqlx::FromRow)]
+    struct CanaryRollbackRow {
+        id: Uuid,
+        policy_version_id: Uuid,
+        from_percentage: i32,
+        to_percentage: i32,
+        success_rate: Option<f64>,
+        triggered_by: String,
+        notes: Option<String>,
+        created_at: DateTime<Utc>,
+    }
+
+    let mut query_builder = sqlx::QueryBuilder::new(
+        "SELECT id, policy_version_id, from_percentage, to_percentage, 
+                success_rate, triggered_by, notes, created_at
+         FROM canary_deployment_history
+         WHERE action = 'ROLLED_BACK' AND created_at >= "
+    );
+    query_builder.push_bind(window_start);
+
+    if let Some(policy_id) = policy_id_filter {
+        query_builder.push(" AND policy_version_id = ");
+        query_builder.push_bind(policy_id);
+    }
+
+    query_builder.push(" ORDER BY created_at DESC");
+
+    let canary_rollbacks: Vec<CanaryRollbackRow> = query_builder
+        .build_query_as()
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+    // Get policy version rollback history
+    #[derive(sqlx::FromRow)]
+    struct PolicyRollbackRow {
+        id: Uuid,
+        policy_version_id: Uuid,
+        previous_version_id: Option<Uuid>,
+        performed_by: Option<String>,
+        notes: Option<String>,
+        created_at: DateTime<Utc>,
+    }
+
+    let mut query_builder2 = sqlx::QueryBuilder::new(
+        "SELECT id, policy_version_id, previous_version_id, performed_by, notes, created_at
+         FROM policy_activation_history
+         WHERE action = 'ROLLED_BACK' AND created_at >= "
+    );
+    query_builder2.push_bind(window_start);
+
+    if let Some(policy_id) = policy_id_filter {
+        query_builder2.push(" AND policy_version_id = ");
+        query_builder2.push_bind(policy_id);
+    }
+
+    query_builder2.push(" ORDER BY created_at DESC");
+
+    let policy_rollbacks: Vec<PolicyRollbackRow> = query_builder2
+        .build_query_as()
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+    let mut rollback_entries = Vec::new();
+    let mut auto_count = 0;
+    let mut manual_count = 0;
+    let mut reason_counts: HashMap<String, i64> = HashMap::new();
+
+    // Process canary rollbacks (auto-rollbacks)
+    for rollback in canary_rollbacks {
+        let policy_name: Option<String> = sqlx::query_scalar(
+            "SELECT policy_name FROM policy_versions WHERE id = $1"
+        )
+        .bind(rollback.policy_version_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        let reason = rollback.notes.unwrap_or_else(|| "Auto-rollback due to high failure rate".to_string());
+        *reason_counts.entry(reason.clone()).or_insert(0) += 1;
+        auto_count += 1;
+
+        // Get error rate from canary metrics
+        let error_rate: Option<f64> = sqlx::query_scalar(
+            "SELECT (failed_requests + blocked_requests)::DECIMAL / NULLIF(total_requests, 0) * 100.0
+             FROM canary_metrics
+             WHERE policy_version_id = $1 AND traffic_percentage = $2
+             ORDER BY window_end DESC
+             LIMIT 1"
+        )
+        .bind(rollback.policy_version_id)
+        .bind(rollback.from_percentage)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        rollback_entries.push(RollbackHistoryEntry {
+            rollback_id: rollback.id,
+            policy_id: rollback.policy_version_id,
+            policy_name: policy_name.unwrap_or_else(|| "Unknown Policy".to_string()),
+            rollback_type: "AUTO".to_string(),
+            from_version: None,
+            to_version: None,
+            from_percentage: Some(rollback.from_percentage),
+            to_percentage: Some(rollback.to_percentage),
+            success_rate: rollback.success_rate,
+            error_rate,
+            reason,
+            performed_by: Some(rollback.triggered_by),
+            timestamp: rollback.created_at,
+        });
+    }
+
+    // Process policy version rollbacks (manual rollbacks)
+    for rollback in policy_rollbacks {
+        let policy_name: Option<String> = sqlx::query_scalar(
+            "SELECT policy_name FROM policy_versions WHERE id = $1"
+        )
+        .bind(rollback.policy_version_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        let from_version: Option<i32> = if let Some(prev_id) = rollback.previous_version_id {
+            sqlx::query_scalar(
+                "SELECT version_number FROM policy_versions WHERE id = $1"
+            )
+            .bind(prev_id)
+            .fetch_optional(&data.db_pool)
+            .await
+            .ok()
+            .flatten()
+        } else {
+            None
+        };
+
+        let to_version: Option<i32> = sqlx::query_scalar(
+            "SELECT version_number FROM policy_versions WHERE id = $1"
+        )
+        .bind(rollback.policy_version_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        let reason = rollback.notes.unwrap_or_else(|| "Manual rollback".to_string());
+        *reason_counts.entry(reason.clone()).or_insert(0) += 1;
+        manual_count += 1;
+
+        rollback_entries.push(RollbackHistoryEntry {
+            rollback_id: rollback.id,
+            policy_id: rollback.policy_version_id,
+            policy_name: policy_name.unwrap_or_else(|| "Unknown Policy".to_string()),
+            rollback_type: "MANUAL".to_string(),
+            from_version,
+            to_version,
+            from_percentage: None,
+            to_percentage: None,
+            success_rate: None,
+            error_rate: None,
+            reason,
+            performed_by: rollback.performed_by,
+            timestamp: rollback.created_at,
+        });
+    }
+
+    // Sort by timestamp (most recent first)
+    rollback_entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+
+    HttpResponse::Ok().json(RollbackHistoryDashboard {
+        rollbacks: rollback_entries,
+        total_rollbacks: (auto_count + manual_count) as i64,
+        auto_rollbacks: auto_count,
+        manual_rollbacks: manual_count,
+        rollback_reasons: reason_counts,
+    })
+}
+
+// ========== APPROVAL DELEGATION ==========
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct CreateDelegationRequest {
+    #[schema(example = "user-123")]
+    pub delegate_id: String,
+    #[schema(example = "POLICY")]
+    pub resource_type: Option<String>,
+    #[schema(example = "2024-12-31T23:59:59Z")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[schema(example = "Delegating approval authority while on vacation")]
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DelegationResponse {
+    pub id: Uuid,
+    pub delegator_id: String,
+    pub delegate_id: String,
+    pub resource_type: String,
+    pub active: bool,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub notes: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DelegationListResponse {
+    pub delegations: Vec<DelegationResponse>,
+    pub total: i64,
+}
+
+/// Create an approval delegation
+#[utoipa::path(
+    post,
+    path = "/approvals/delegations",
+    tag = "Policy Approvals",
+    request_body = CreateDelegationRequest,
+    responses(
+        (status = 200, description = "Delegation created", body = DelegationResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 400, description = "Invalid request"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn create_delegation(
+    req: web::Json<CreateDelegationRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let delegation_req = req.into_inner();
+
+    // Validate delegate exists
+    let delegate_exists: Option<bool> = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1::uuid OR username = $1)"
+    )
+    .bind(&delegation_req.delegate_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    if !delegate_exists.unwrap_or(false) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "DELEGATE_NOT_FOUND",
+            "message": "Delegate user not found"
+        }));
+    }
+
+    // Check if delegate is different from delegator
+    if delegation_req.delegate_id == claims.sub {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "INVALID_DELEGATE",
+            "message": "Cannot delegate to yourself"
+        }));
+    }
+
+    // Check if delegation already exists and is active
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM approval_delegations
+         WHERE delegator_id = $1 
+           AND delegate_id = $2
+           AND resource_type = COALESCE($3, 'POLICY')
+           AND active = true
+           AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"
+    )
+    .bind(&claims.sub)
+    .bind(&delegation_req.delegate_id)
+    .bind(&delegation_req.resource_type)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    if existing.is_some() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "DELEGATION_EXISTS",
+            "message": "An active delegation already exists for this user"
+        }));
+    }
+
+    // Create delegation
+    let delegation_id: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO approval_delegations (delegator_id, delegate_id, resource_type, expires_at, notes)
+         VALUES ($1, $2, COALESCE($3, 'POLICY'), $4, $5)
+         RETURNING id"
+    )
+    .bind(&claims.sub)
+    .bind(&delegation_req.delegate_id)
+    .bind(&delegation_req.resource_type)
+    .bind(&delegation_req.expires_at)
+    .bind(&delegation_req.notes)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    match delegation_id {
+        Some(id) => {
+            // Get the created delegation
+            #[derive(sqlx::FromRow)]
+            struct DelegationRow {
+                id: Uuid,
+                delegator_id: String,
+                delegate_id: String,
+                resource_type: String,
+                active: bool,
+                expires_at: Option<DateTime<Utc>>,
+                created_at: DateTime<Utc>,
+                notes: Option<String>,
+            }
+
+            let delegation: Option<DelegationRow> = sqlx::query_as(
+                "SELECT id, delegator_id, delegate_id, resource_type, active, expires_at, created_at, notes
+                 FROM approval_delegations
+                 WHERE id = $1"
+            )
+            .bind(id)
+            .fetch_optional(&data.db_pool)
+            .await
+            .ok()
+            .flatten();
+
+            if let Some(d) = delegation {
+                HttpResponse::Ok().json(DelegationResponse {
+                    id: d.id,
+                    delegator_id: d.delegator_id,
+                    delegate_id: d.delegate_id,
+                    resource_type: d.resource_type,
+                    active: d.active,
+                    expires_at: d.expires_at,
+                    created_at: d.created_at,
+                    notes: d.notes,
+                })
+            } else {
+                HttpResponse::InternalServerError().json(serde_json::json!({
+                    "error": "DELEGATION_CREATION_FAILED"
+                }))
+            }
+        }
+        None => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "DELEGATION_CREATION_FAILED",
+            "message": "Failed to create delegation"
+        }))
+    }
+}
+
+/// List approval delegations
+#[utoipa::path(
+    get,
+    path = "/approvals/delegations",
+    tag = "Policy Approvals",
+    params(
+        ("type" = Option<String>, Query, description = "Filter by type: 'sent' (delegations I created) or 'received' (delegations I received)"),
+    ),
+    responses(
+        (status = 200, description = "List of delegations", body = DelegationListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn list_delegations(
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let filter_type = query.get("type").map(|s| s.as_str());
+
+    #[derive(sqlx::FromRow)]
+    struct DelegationRow {
+        id: Uuid,
+        delegator_id: String,
+        delegate_id: String,
+        resource_type: String,
+        active: bool,
+        expires_at: Option<DateTime<Utc>>,
+        created_at: DateTime<Utc>,
+        notes: Option<String>,
+    }
+
+    let delegations: Vec<DelegationRow> = match filter_type {
+        Some("sent") => {
+            sqlx::query_as(
+                "SELECT id, delegator_id, delegate_id, resource_type, active, expires_at, created_at, notes
+                 FROM approval_delegations
+                 WHERE delegator_id = $1
+                 ORDER BY created_at DESC"
+            )
+            .bind(&claims.sub)
+            .fetch_all(&data.db_pool)
+            .await
+            .unwrap_or_default()
+        }
+        Some("received") => {
+            sqlx::query_as(
+                "SELECT id, delegator_id, delegate_id, resource_type, active, expires_at, created_at, notes
+                 FROM approval_delegations
+                 WHERE delegate_id = $1
+                 ORDER BY created_at DESC"
+            )
+            .bind(&claims.sub)
+            .fetch_all(&data.db_pool)
+            .await
+            .unwrap_or_default()
+        }
+        _ => {
+            sqlx::query_as(
+                "SELECT id, delegator_id, delegate_id, resource_type, active, expires_at, created_at, notes
+                 FROM approval_delegations
+                 WHERE delegator_id = $1 OR delegate_id = $1
+                 ORDER BY created_at DESC"
+            )
+            .bind(&claims.sub)
+            .fetch_all(&data.db_pool)
+            .await
+            .unwrap_or_default()
+        }
+    };
+
+    let delegations_response: Vec<DelegationResponse> = delegations.into_iter().map(|d| {
+        DelegationResponse {
+            id: d.id,
+            delegator_id: d.delegator_id,
+            delegate_id: d.delegate_id,
+            resource_type: d.resource_type,
+            active: d.active,
+            expires_at: d.expires_at,
+            created_at: d.created_at,
+            notes: d.notes,
+        }
+    }).collect();
+
+    let total = delegations_response.len() as i64;
+    HttpResponse::Ok().json(DelegationListResponse {
+        delegations: delegations_response,
+        total,
+    })
+}
+
+/// Revoke an approval delegation
+#[utoipa::path(
+    delete,
+    path = "/approvals/delegations/{delegation_id}",
+    tag = "Policy Approvals",
+    params(
+        ("delegation_id" = Uuid, Path, description = "Delegation ID"),
+    ),
+    responses(
+        (status = 200, description = "Delegation revoked"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Delegation not found"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn revoke_delegation(
+    delegation_id: web::Path<Uuid>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "policy", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let delegation_id = delegation_id.into_inner();
+
+    // Check if delegation exists and user has permission to revoke it
+    let delegation: Option<(String, String)> = sqlx::query_as(
+        "SELECT delegator_id, delegate_id
+         FROM approval_delegations
+         WHERE id = $1 AND active = true"
+    )
+    .bind(delegation_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    match delegation {
+        Some((delegator_id, delegate_id)) => {
+            // Only delegator or delegate can revoke
+            if delegator_id != claims.sub && delegate_id != claims.sub {
+                return HttpResponse::Forbidden().json(serde_json::json!({
+                    "error": "PERMISSION_DENIED",
+                    "message": "You can only revoke delegations you created or received"
+                }));
+            }
+
+            // Revoke delegation
+            let rows_affected = sqlx::query(
+                "UPDATE approval_delegations
+                 SET active = false, revoked_at = CURRENT_TIMESTAMP
+                 WHERE id = $1"
+            )
+            .bind(delegation_id)
+            .execute(&data.db_pool)
+            .await
+            .map(|r| r.rows_affected())
+            .unwrap_or(0);
+
+            if rows_affected > 0 {
+                HttpResponse::Ok().json(serde_json::json!({
+                    "status": "SUCCESS",
+                    "message": "Delegation revoked successfully"
+                }))
+            } else {
+                HttpResponse::NotFound().json(serde_json::json!({
+                    "error": "DELEGATION_NOT_FOUND"
+                }))
+            }
+        }
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "DELEGATION_NOT_FOUND",
+            "message": "Delegation not found or already revoked"
+        }))
+    }
+}
+
+// ========== TPRM COMPLIANCE REPORTING (DORA Article 9) ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct TPRMComplianceReport {
+    pub total_vendors: i64,
+    pub high_risk_vendors: i64,
+    pub critical_risk_vendors: i64,
+    pub non_compliant_vendors: i64,
+    pub vendors_by_country: HashMap<String, i64>,
+    pub vendors_by_risk_level: HashMap<String, i64>,
+    pub vendors: Vec<VendorComplianceInfo>,
+    pub compliance_score: f64,
+    pub dora_article9_compliant: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct VendorComplianceInfo {
+    pub vendor_domain: String,
+    pub vendor_name: Option<String>,
+    pub risk_score: f64,
+    pub risk_level: String,
+    pub compliance_status: String,
+    pub country_code: Option<String>,
+    pub industry_sector: Option<String>,
+    pub associated_assets: Vec<String>,
+    pub last_assessed: Option<DateTime<Utc>>,
+}
+
+/// Get TPRM compliance report (DORA Article 9 - Third-Party Risk Register)
+#[utoipa::path(
+    get,
+    path = "/reports/tprm-compliance",
+    tag = "TPRM Compliance",
+    params(
+        ("risk_level" = Option<String>, Query, description = "Filter by risk level: LOW, MEDIUM, HIGH, CRITICAL"),
+        ("country" = Option<String>, Query, description = "Filter by country code"),
+    ),
+    responses(
+        (status = 200, description = "TPRM compliance report", body = TPRMComplianceReport),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_tprm_compliance_report(
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "tprm", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let risk_level_filter = query.get("risk_level");
+    let country_filter = query.get("country");
+
+    // Get all vendor risk scores
+    #[derive(sqlx::FromRow)]
+    struct VendorRiskRow {
+        vendor_domain: String,
+        vendor_name: Option<String>,
+        risk_score: Option<rust_decimal::Decimal>,
+        risk_level: Option<String>,
+        compliance_status: Option<String>,
+        country_code: Option<String>,
+        industry_sector: Option<String>,
+        last_updated: Option<DateTime<Utc>>,
+    }
+
+    let mut query_builder = sqlx::QueryBuilder::new(
+        "SELECT vendor_domain, vendor_name, risk_score, risk_level, 
+                compliance_status, country_code, industry_sector, last_updated
+         FROM vendor_risk_scores WHERE 1=1"
+    );
+
+    if let Some(rl) = risk_level_filter {
+        query_builder.push(" AND risk_level = ");
+        query_builder.push_bind(rl);
+    }
+
+    if let Some(country) = country_filter {
+        query_builder.push(" AND country_code = ");
+        query_builder.push_bind(country);
+    }
+
+    query_builder.push(" ORDER BY risk_score DESC NULLS LAST");
+
+    let vendors: Vec<VendorRiskRow> = query_builder
+        .build_query_as()
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+    let total_vendors = vendors.len() as i64;
+    let high_risk_vendors = vendors.iter().filter(|v| v.risk_level.as_deref() == Some("HIGH")).count() as i64;
+    let critical_risk_vendors = vendors.iter().filter(|v| v.risk_level.as_deref() == Some("CRITICAL")).count() as i64;
+    let non_compliant_vendors = vendors.iter().filter(|v| v.compliance_status.as_deref() == Some("NON_COMPLIANT")).count() as i64;
+
+    // Group by country
+    let mut vendors_by_country: HashMap<String, i64> = HashMap::new();
+    for vendor in &vendors {
+        if let Some(country) = &vendor.country_code {
+            *vendors_by_country.entry(country.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Group by risk level
+    let mut vendors_by_risk_level: HashMap<String, i64> = HashMap::new();
+    for vendor in &vendors {
+        if let Some(risk_level) = &vendor.risk_level {
+            *vendors_by_risk_level.entry(risk_level.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Get associated assets for each vendor
+    let mut vendor_info: Vec<VendorComplianceInfo> = Vec::new();
+    for vendor in vendors {
+        let asset_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT a.asset_id 
+             FROM assets a
+             JOIN asset_vendor_mapping avm ON avm.asset_id = a.id
+             WHERE avm.vendor_domain = $1 AND a.is_active = true"
+        )
+        .bind(&vendor.vendor_domain)
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+        vendor_info.push(VendorComplianceInfo {
+            vendor_domain: vendor.vendor_domain,
+            vendor_name: vendor.vendor_name,
+            risk_score: vendor.risk_score.map(|d| {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_f64().unwrap_or(0.0)
+            }).unwrap_or(0.0),
+            risk_level: vendor.risk_level.unwrap_or_else(|| "UNKNOWN".to_string()),
+            compliance_status: vendor.compliance_status.unwrap_or_else(|| "UNKNOWN".to_string()),
+            country_code: vendor.country_code,
+            industry_sector: vendor.industry_sector,
+            associated_assets: asset_ids,
+            last_assessed: vendor.last_updated,
+        });
+    }
+
+    // Calculate compliance score (0-100)
+    let compliance_score = if total_vendors > 0 {
+        let compliant_count = vendor_info.iter()
+            .filter(|v| v.compliance_status == "COMPLIANT")
+            .count() as f64;
+        (compliant_count / total_vendors as f64) * 100.0
+    } else {
+        100.0 // No vendors = fully compliant
+    };
+
+    // DORA Article 9 compliance: Must have risk register with all third parties
+    let dora_article9_compliant = total_vendors > 0 && compliance_score >= 80.0;
+
+    HttpResponse::Ok().json(TPRMComplianceReport {
+        total_vendors,
+        high_risk_vendors,
+        critical_risk_vendors,
+        non_compliant_vendors,
+        vendors_by_country,
+        vendors_by_risk_level,
+        vendors: vendor_info,
+        compliance_score,
+        dora_article9_compliant,
+    })
+}
+
+/// Get vendor risk dashboard data
+#[utoipa::path(
+    get,
+    path = "/analytics/vendor-risk",
+    tag = "TPRM Analytics",
+    params(
+        ("risk_level" = Option<String>, Query, description = "Filter by risk level"),
+        ("country" = Option<String>, Query, description = "Filter by country"),
+        ("industry" = Option<String>, Query, description = "Filter by industry sector"),
+    ),
+    responses(
+        (status = 200, description = "Vendor risk dashboard data", body = TPRMComplianceReport),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_vendor_risk_dashboard(
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // Reuse TPRM compliance report endpoint for dashboard
+    get_tprm_compliance_report(query, data, http_req).await
+}
+
+// ========== BUSINESS FUNCTION ANALYTICS ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct BusinessFunctionDashboard {
+    pub business_functions: Vec<BusinessFunctionStats>,
+    pub total_assets: i64,
+    pub compliant_assets: i64,
+    pub non_compliant_assets: i64,
+    pub compliance_by_function: HashMap<String, f64>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BusinessFunctionStats {
+    pub business_function: String,
+    pub asset_count: i64,
+    pub compliant_count: i64,
+    pub non_compliant_count: i64,
+    pub compliance_score: f64,
+    pub high_risk_assets: i64,
+    pub critical_assets: i64,
+    pub avg_risk_score: f64,
+}
+
+/// Get business function dashboard
+#[utoipa::path(
+    get,
+    path = "/analytics/business-functions",
+    tag = "Business Analytics",
+    params(
+        ("business_function" = Option<String>, Query, description = "Filter by business function"),
+    ),
+    responses(
+        (status = 200, description = "Business function dashboard", body = BusinessFunctionDashboard),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_business_function_dashboard(
+    query: web::Query<HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "analytics", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let business_function_filter = query.get("business_function");
+
+    #[derive(sqlx::FromRow)]
+    struct AssetStatsRow {
+        business_function: String,
+        asset_count: i64,
+        compliant_count: i64,
+        non_compliant_count: i64,
+        high_risk_count: i64,
+        critical_count: i64,
+        avg_risk_score: Option<rust_decimal::Decimal>,
+    }
+
+    let mut query_builder = sqlx::QueryBuilder::new(
+        "SELECT 
+            business_function,
+            COUNT(*) as asset_count,
+            COUNT(*) FILTER (WHERE risk_profile = 'LOW' OR risk_profile = 'MEDIUM') as compliant_count,
+            COUNT(*) FILTER (WHERE risk_profile = 'HIGH' OR risk_profile = 'CRITICAL') as non_compliant_count,
+            COUNT(*) FILTER (WHERE risk_profile = 'HIGH') as high_risk_count,
+            COUNT(*) FILTER (WHERE risk_profile = 'CRITICAL') as critical_count,
+            AVG(CASE 
+                WHEN risk_profile = 'LOW' THEN 20.0
+                WHEN risk_profile = 'MEDIUM' THEN 50.0
+                WHEN risk_profile = 'HIGH' THEN 75.0
+                WHEN risk_profile = 'CRITICAL' THEN 95.0
+                ELSE 50.0
+            END) as avg_risk_score
+         FROM assets
+         WHERE is_active = true"
+    );
+
+    if let Some(bf) = business_function_filter {
+        query_builder.push(" AND business_function = ");
+        query_builder.push_bind(bf);
+    }
+
+    query_builder.push(" GROUP BY business_function ORDER BY asset_count DESC");
+
+    let stats: Vec<AssetStatsRow> = query_builder
+        .build_query_as()
+        .fetch_all(&data.db_pool)
+        .await
+        .unwrap_or_default();
+
+    let total_assets: i64 = stats.iter().map(|s| s.asset_count).sum();
+    let compliant_assets: i64 = stats.iter().map(|s| s.compliant_count).sum();
+    let non_compliant_assets: i64 = stats.iter().map(|s| s.non_compliant_count).sum();
+
+    let mut business_functions = Vec::new();
+    let mut compliance_by_function: HashMap<String, f64> = HashMap::new();
+
+    for stat in stats {
+        let compliance_score = if stat.asset_count > 0 {
+            (stat.compliant_count as f64 / stat.asset_count as f64) * 100.0
+        } else {
+            100.0
+        };
+
+        compliance_by_function.insert(stat.business_function.clone(), compliance_score);
+
+        business_functions.push(BusinessFunctionStats {
+            business_function: stat.business_function,
+            asset_count: stat.asset_count,
+            compliant_count: stat.compliant_count,
+            non_compliant_count: stat.non_compliant_count,
+            compliance_score,
+            high_risk_assets: stat.high_risk_count,
+            critical_assets: stat.critical_count,
+            avg_risk_score: stat.avg_risk_score.map(|d| {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_f64().unwrap_or(50.0)
+            }).unwrap_or(50.0),
+        });
+    }
+
+    HttpResponse::Ok().json(BusinessFunctionDashboard {
+        business_functions,
+        total_assets,
+        compliant_assets,
+        non_compliant_assets,
+        compliance_by_function,
+    })
+}
+
+// ========== DORA COMPLIANCE REPORTING ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct DORAComplianceReport {
+    pub overall_score: f64,
+    pub article9_compliant: bool, // ICT third-party risk register
+    pub article10_compliant: bool, // Incident reporting
+    pub article11_compliant: bool, // Operational resilience testing
+    pub article9_score: f64,
+    pub article10_score: f64,
+    pub article11_score: f64,
+    pub third_party_risk_register: TPRMComplianceReport,
+    pub incident_reporting: DORAIncidentReporting,
+    pub resilience_testing: DORAResilienceTesting,
+    pub recommendations: Vec<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DORAIncidentReporting {
+    pub total_incidents: i64,
+    pub incidents_reported_within_72h: i64,
+    pub incidents_pending_report: i64,
+    pub average_reporting_time_hours: f64,
+    pub compliance_rate: f64,
+    pub recent_incidents: Vec<DORAIncident>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DORAIncident {
+    pub incident_id: String,
+    pub incident_type: String,
+    pub detected_at: DateTime<Utc>,
+    pub reported_at: Option<DateTime<Utc>>,
+    pub reporting_time_hours: Option<f64>,
+    pub within_72h: bool,
+    pub severity: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DORAResilienceTesting {
+    pub last_test_date: Option<DateTime<Utc>>,
+    pub tests_conducted_this_year: i64,
+    pub tests_passed: i64,
+    pub tests_failed: i64,
+    pub compliance_rate: f64,
+    pub next_test_due: Option<DateTime<Utc>>,
+    pub test_results: Vec<DORATestResult>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DORATestResult {
+    pub test_id: String,
+    pub test_type: String,
+    pub test_date: DateTime<Utc>,
+    pub passed: bool,
+    pub score: f64,
+    pub notes: Option<String>,
+}
+
+/// Get DORA compliance report
+#[utoipa::path(
+    get,
+    path = "/reports/dora-compliance",
+    tag = "DORA Compliance",
+    responses(
+        (status = 200, description = "DORA compliance report", body = DORAComplianceReport),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_dora_compliance_report(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "reports", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    // Get TPRM compliance (Article 9) - Query directly
+    #[derive(sqlx::FromRow)]
+    struct VendorRiskRow {
+        vendor_domain: String,
+        vendor_name: Option<String>,
+        risk_score: Option<rust_decimal::Decimal>,
+        risk_level: Option<String>,
+        compliance_status: Option<String>,
+        country_code: Option<String>,
+        industry_sector: Option<String>,
+        last_updated: Option<DateTime<Utc>>,
+    }
+
+    let vendors: Vec<VendorRiskRow> = sqlx::query_as(
+        "SELECT vendor_domain, vendor_name, risk_score, risk_level, 
+                compliance_status, country_code, industry_sector, last_updated
+         FROM vendor_risk_scores
+         ORDER BY risk_score DESC NULLS LAST"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let total_vendors = vendors.len() as i64;
+    let compliant_vendors = vendors.iter()
+        .filter(|v| v.compliance_status.as_deref() == Some("COMPLIANT"))
+        .count() as i64;
+
+    let article9_score = if total_vendors > 0 {
+        (compliant_vendors as f64 / total_vendors as f64) * 100.0
+    } else {
+        100.0
+    };
+
+    let article9_compliant = total_vendors > 0 && article9_score >= 80.0;
+
+    // Get incident reporting data (Article 10)
+    #[derive(sqlx::FromRow)]
+    struct IncidentRow {
+        breach_id: String,
+        breach_type: String,
+        detected_at: DateTime<Utc>,
+        reported_to_authority_at: Option<DateTime<Utc>>,
+        severity: String,
+    }
+
+    let incidents: Vec<IncidentRow> = sqlx::query_as(
+        "SELECT breach_id, breach_type, detected_at, reported_to_authority_at, severity
+         FROM data_breaches
+         WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '1 year'
+         ORDER BY detected_at DESC"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let total_incidents = incidents.len() as i64;
+    let mut incidents_reported_within_72h = 0;
+    let mut total_reporting_time = 0.0;
+    let mut reported_count = 0;
+
+    let mut dora_incidents = Vec::new();
+    for incident in incidents {
+        let reporting_time = if let Some(reported_at) = incident.reported_to_authority_at {
+            let duration = reported_at.signed_duration_since(incident.detected_at);
+            let hours = duration.num_hours() as f64;
+            total_reporting_time += hours;
+            reported_count += 1;
+            if hours <= 72.0 {
+                incidents_reported_within_72h += 1;
+            }
+            Some(hours)
+        } else {
+            None
+        };
+
+        dora_incidents.push(DORAIncident {
+            incident_id: incident.breach_id,
+            incident_type: incident.breach_type,
+            detected_at: incident.detected_at,
+            reported_at: incident.reported_to_authority_at,
+            reporting_time_hours: reporting_time,
+            within_72h: reporting_time.map(|h| h <= 72.0).unwrap_or(false),
+            severity: incident.severity,
+        });
+    }
+
+    let average_reporting_time = if reported_count > 0 {
+        total_reporting_time / reported_count as f64
+    } else {
+        0.0
+    };
+
+    let article10_compliance_rate = if total_incidents > 0 {
+        (incidents_reported_within_72h as f64 / total_incidents as f64) * 100.0
+    } else {
+        100.0
+    };
+
+    let article10_score = article10_compliance_rate;
+    let article10_compliant = article10_compliance_rate >= 100.0;
+
+    // Get resilience testing data (Article 11)
+    #[derive(sqlx::FromRow)]
+    struct TestRow {
+        test_id: String,
+        test_type: String,
+        test_date: DateTime<Utc>,
+        passed: bool,
+        score: Option<rust_decimal::Decimal>,
+        notes: Option<String>,
+    }
+
+    let tests: Vec<TestRow> = sqlx::query_as(
+        "SELECT test_id, test_type, test_date, passed, score, notes
+         FROM resilience_tests
+         WHERE test_date >= CURRENT_TIMESTAMP - INTERVAL '1 year'
+         ORDER BY test_date DESC"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let tests_this_year = tests.len() as i64;
+    let tests_passed = tests.iter().filter(|t| t.passed).count() as i64;
+    let tests_failed = tests_this_year - tests_passed;
+
+    let last_test = tests.first();
+    let last_test_date = last_test.map(|t| t.test_date);
+
+    // Calculate next test due (should be within 1 year)
+    let next_test_due = last_test_date.map(|d| d + chrono::Duration::days(365));
+
+    let article11_compliance_rate = if tests_this_year > 0 {
+        (tests_passed as f64 / tests_this_year as f64) * 100.0
+    } else {
+        0.0 // No tests = non-compliant
+    };
+
+    let article11_score = if tests_this_year >= 1 {
+        article11_compliance_rate
+    } else {
+        0.0
+    };
+
+    let article11_compliant = tests_this_year >= 1 && article11_compliance_rate >= 80.0;
+
+    let test_results: Vec<DORATestResult> = tests.into_iter().map(|t| {
+        DORATestResult {
+            test_id: t.test_id,
+            test_type: t.test_type,
+            test_date: t.test_date,
+            passed: t.passed,
+            score: t.score.map(|d| {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_f64().unwrap_or(0.0)
+            }).unwrap_or(if t.passed { 100.0 } else { 0.0 }),
+            notes: t.notes,
+        }
+    }).collect();
+
+    // Calculate overall DORA compliance score
+    let overall_score = (article9_score + article10_score + article11_score) / 3.0;
+
+    // Generate recommendations
+    let mut recommendations = Vec::new();
+    if !article9_compliant {
+        recommendations.push(format!(
+            "Improve third-party risk register compliance from {:.1}% to 80%+ (DORA Article 9)",
+            article9_score
+        ));
+    }
+    if !article10_compliant {
+        recommendations.push(format!(
+            "Ensure all incidents are reported within 72 hours. Current compliance: {:.1}% (DORA Article 10)",
+            article10_compliance_rate
+        ));
+    }
+    if !article11_compliant {
+        if tests_this_year == 0 {
+            recommendations.push("Conduct operational resilience testing (DORA Article 11)".to_string());
+        } else {
+            recommendations.push(format!(
+                "Improve resilience testing pass rate from {:.1}% to 80%+ (DORA Article 11)",
+                article11_compliance_rate
+            ));
+        }
+    }
+
+    // Build TPRM report for response
+    let vendors_by_country: HashMap<String, i64> = vendors.iter()
+        .filter_map(|v| v.country_code.as_ref().map(|c| (c.clone(), 1)))
+        .fold(HashMap::new(), |mut acc, (country, _)| {
+            *acc.entry(country).or_insert(0) += 1;
+            acc
+        });
+
+    let vendors_by_risk_level: HashMap<String, i64> = vendors.iter()
+        .filter_map(|v| v.risk_level.as_ref().map(|r| (r.clone(), 1)))
+        .fold(HashMap::new(), |mut acc, (level, _)| {
+            *acc.entry(level).or_insert(0) += 1;
+            acc
+        });
+
+    let vendor_info: Vec<VendorComplianceInfo> = vendors.into_iter().map(|v| {
+        VendorComplianceInfo {
+            vendor_domain: v.vendor_domain,
+            vendor_name: v.vendor_name,
+            risk_score: v.risk_score.map(|d| {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_f64().unwrap_or(0.0)
+            }).unwrap_or(0.0),
+            risk_level: v.risk_level.unwrap_or_else(|| "UNKNOWN".to_string()),
+            compliance_status: v.compliance_status.unwrap_or_else(|| "UNKNOWN".to_string()),
+            country_code: v.country_code,
+            industry_sector: v.industry_sector,
+            associated_assets: Vec::new(), // Simplified for DORA report
+            last_assessed: v.last_updated,
+        }
+    }).collect();
+
+    let tprm_report = TPRMComplianceReport {
+        total_vendors,
+        high_risk_vendors: vendors_by_risk_level.get("HIGH").copied().unwrap_or(0),
+        critical_risk_vendors: vendors_by_risk_level.get("CRITICAL").copied().unwrap_or(0),
+        non_compliant_vendors: vendors_by_risk_level.get("NON_COMPLIANT").copied().unwrap_or(0),
+        vendors_by_country,
+        vendors_by_risk_level,
+        vendors: vendor_info,
+        compliance_score: article9_score,
+        dora_article9_compliant: article9_compliant,
+    };
+
+    HttpResponse::Ok().json(DORAComplianceReport {
+        overall_score,
+        article9_compliant,
+        article10_compliant,
+        article11_compliant,
+        article9_score,
+        article10_score,
+        article11_score,
+        third_party_risk_register: tprm_report,
+        incident_reporting: DORAIncidentReporting {
+            total_incidents,
+            incidents_reported_within_72h,
+            incidents_pending_report: total_incidents - incidents_reported_within_72h,
+            average_reporting_time_hours: average_reporting_time,
+            compliance_rate: article10_compliance_rate,
+            recent_incidents: dora_incidents,
+        },
+        resilience_testing: DORAResilienceTesting {
+            last_test_date,
+            tests_conducted_this_year: tests_this_year,
+            tests_passed,
+            tests_failed,
+            compliance_rate: article11_compliance_rate,
+            next_test_due,
+            test_results,
+        },
+        recommendations,
+    })
+}
+
+// ========== NIS2 COMPLIANCE REPORTING ==========
+
+#[derive(Serialize, ToSchema)]
+pub struct NIS2ComplianceReport {
+    pub overall_score: f64,
+    pub article20_compliant: bool, // Management body accountability
+    pub article21_compliant: bool, // Baseline cybersecurity measures
+    pub article23_compliant: bool, // Incident reporting
+    pub article20_score: f64,
+    pub article21_score: f64,
+    pub article23_score: f64,
+    pub management_accountability: NIS2ManagementAccountability,
+    pub baseline_measures: NIS2BaselineMeasures,
+    pub incident_reporting: NIS2IncidentReporting,
+    pub liability_protection_status: String, // PROTECTED, AT_RISK, EXPOSED
+    pub recommendations: Vec<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct NIS2ManagementAccountability {
+    pub management_body_identified: bool,
+    pub accountability_framework_established: bool,
+    pub training_completed: bool,
+    pub compliance_score: f64,
+    pub last_assessment_date: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct NIS2BaselineMeasures {
+    pub measures_implemented: Vec<NIS2Measure>,
+    pub total_measures: i32,
+    pub implemented_count: i32,
+    pub compliance_rate: f64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct NIS2Measure {
+    pub measure_id: String,
+    pub measure_name: String,
+    pub article_reference: String,
+    pub implemented: bool,
+    pub evidence: Option<String>,
+    pub last_verified: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct NIS2IncidentReporting {
+    pub total_incidents: i64,
+    pub incidents_reported: i64,
+    pub incidents_pending: i64,
+    pub average_reporting_time_hours: f64,
+    pub compliance_rate: f64,
+    pub early_warning_indicators: Vec<String>,
+}
+
+/// Get NIS2 compliance report
+#[utoipa::path(
+    get,
+    path = "/reports/nis2-compliance",
+    tag = "NIS2 Compliance",
+    responses(
+        (status = 200, description = "NIS2 compliance report", body = NIS2ComplianceReport),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_nis2_compliance_report(
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "reports", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    // Article 20: Management Body Accountability
+    // Check if management accountability framework exists
+    let management_accountability = {
+        // Check for executive assurance scorecard (indicates management engagement)
+        let has_executive_dashboard = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'executive_scorecards')"
+        )
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(false);
+
+        // Check for compliance KPIs (indicates accountability framework)
+        let has_kpis = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM compliance_kpis WHERE is_active = true"
+        )
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(0);
+
+        let management_body_identified = has_executive_dashboard || has_kpis > 0;
+        let accountability_framework_established = has_executive_dashboard;
+        
+        // Check for training records
+        let training_completed = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM training_records WHERE training_type = 'NIS2_MANAGEMENT' AND completed_at IS NOT NULL"
+        )
+        .fetch_one(&data.db_pool)
+        .await
+        .unwrap_or(0) > 0;
+
+        let compliance_score = {
+            let mut score = 0.0;
+            if management_body_identified { score += 33.3; }
+            if accountability_framework_established { score += 33.3; }
+            if training_completed { score += 33.4; }
+            score
+        };
+
+        let last_assessment = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+            "SELECT MAX(created_at) FROM executive_scorecards"
+        )
+        .fetch_one(&data.db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        NIS2ManagementAccountability {
+            management_body_identified,
+            accountability_framework_established,
+            training_completed,
+            compliance_score,
+            last_assessment_date: last_assessment,
+        }
+    };
+
+    let article20_score = management_accountability.compliance_score;
+    let article20_compliant = article20_score >= 80.0;
+
+    // Article 21: Baseline Cybersecurity Measures
+    // NIS2 requires 10 minimum cybersecurity measures
+    let baseline_measures_list = vec![
+        ("POLICY", "Security policies and procedures", "Article 21.1"),
+        ("RISK_ASSESSMENT", "Risk analysis and information system security policies", "Article 21.2"),
+        ("INCIDENT_HANDLING", "Incident handling", "Article 21.3"),
+        ("BUSINESS_CONTINUITY", "Business continuity and crisis management", "Article 21.4"),
+        ("SUPPLY_CHAIN", "Supply chain security", "Article 21.5"),
+        ("BASIC_HYGIENE", "Security in network and information systems", "Article 21.6"),
+        ("PERSONNEL", "Policies and procedures regarding the security of network and information systems", "Article 21.7"),
+        ("ENCRYPTION", "Use of cryptography and encryption", "Article 21.8"),
+        ("ACCESS_CONTROL", "Access control and asset management", "Article 21.9"),
+        ("MONITORING", "Continuous monitoring and vulnerability management", "Article 21.10"),
+    ];
+
+    let mut measures_implemented = Vec::new();
+    for (measure_id, measure_name, article_ref) in baseline_measures_list {
+        // Check if measure is implemented based on existing features
+        let implemented = match measure_id {
+            "POLICY" => {
+                // Check for active policies
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM asset_policies WHERE is_active = true"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "RISK_ASSESSMENT" => {
+                // Check for risk assessments
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM risk_assessments WHERE assessed_at > CURRENT_TIMESTAMP - INTERVAL '1 year'"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "INCIDENT_HANDLING" => {
+                // Check for incident handling (data breaches)
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM data_breaches"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "BUSINESS_CONTINUITY" => {
+                // Check for resilience tests
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM resilience_tests"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "SUPPLY_CHAIN" => {
+                // Check for TPRM (vendor risk management)
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM vendor_risk_scores"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "BASIC_HYGIENE" => {
+                // Check for compliance records (indicates security monitoring)
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM compliance_records WHERE timestamp > CURRENT_TIMESTAMP - INTERVAL '30 days'"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "PERSONNEL" => {
+                // Check for user management
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM users"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "ENCRYPTION" => {
+                // Check for crypto-shredder (indicates encryption)
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM crypto_shredder_keys"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "ACCESS_CONTROL" => {
+                // Check for API keys (indicates access control)
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM api_keys WHERE is_active = true"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            "MONITORING" => {
+                // Check for monitoring (compliance records, webhooks)
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM webhooks WHERE is_active = true"
+                )
+                .fetch_one(&data.db_pool)
+                .await
+                .unwrap_or(0) > 0
+            },
+            _ => false,
+        };
+
+        measures_implemented.push(NIS2Measure {
+            measure_id: measure_id.to_string(),
+            measure_name: measure_name.to_string(),
+            article_reference: article_ref.to_string(),
+            implemented,
+            evidence: if implemented {
+                Some(format!("Verified through {} feature", measure_id))
+            } else {
+                None
+            },
+            last_verified: if implemented {
+                Some(Utc::now())
+            } else {
+                None
+            },
+        });
+    }
+
+    let implemented_count = measures_implemented.iter().filter(|m| m.implemented).count() as i32;
+    let total_measures = measures_implemented.len() as i32;
+    let article21_score = (implemented_count as f64 / total_measures as f64) * 100.0;
+    let article21_compliant = article21_score >= 80.0;
+
+    // Article 23: Incident Reporting
+    // Get incident reporting data (similar to DORA Article 10)
+    #[derive(sqlx::FromRow)]
+    struct IncidentRow {
+        breach_id: String,
+        detected_at: DateTime<Utc>,
+        reported_to_authority_at: Option<DateTime<Utc>>,
+    }
+
+    let incidents: Vec<IncidentRow> = sqlx::query_as(
+        "SELECT breach_id, detected_at, reported_to_authority_at
+         FROM data_breaches
+         WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '1 year'
+         ORDER BY detected_at DESC"
+    )
+    .fetch_all(&data.db_pool)
+    .await
+    .unwrap_or_default();
+
+    let total_incidents = incidents.len() as i64;
+    let incidents_reported = incidents.iter().filter(|i| i.reported_to_authority_at.is_some()).count() as i64;
+    let incidents_pending = total_incidents - incidents_reported;
+
+    let mut total_reporting_time = 0.0;
+    let mut reported_count = 0;
+    for incident in &incidents {
+        if let Some(reported_at) = incident.reported_to_authority_at {
+            let duration = reported_at.signed_duration_since(incident.detected_at);
+            total_reporting_time += duration.num_hours() as f64;
+            reported_count += 1;
+        }
+    }
+
+    let average_reporting_time = if reported_count > 0 {
+        total_reporting_time / reported_count as f64
+    } else {
+        0.0
+    };
+
+    let article23_compliance_rate = if total_incidents > 0 {
+        (incidents_reported as f64 / total_incidents as f64) * 100.0
+    } else {
+        100.0
+    };
+
+    let article23_score = article23_compliance_rate;
+    let article23_compliant = article23_compliance_rate >= 100.0;
+
+    // Early warning indicators
+    let mut early_warning_indicators = Vec::new();
+    if total_incidents > 0 && incidents_pending > 0 {
+        early_warning_indicators.push(format!("{} incident(s) pending report", incidents_pending));
+    }
+    if average_reporting_time > 24.0 {
+        early_warning_indicators.push(format!("Average reporting time is {:.1} hours (target: <24h)", average_reporting_time));
+    }
+    if article21_score < 80.0 {
+        early_warning_indicators.push(format!("Only {:.0}% of baseline measures implemented", article21_score));
+    }
+
+    // Calculate overall NIS2 compliance score
+    let overall_score = (article20_score + article21_score + article23_score) / 3.0;
+
+    // Determine liability protection status
+    let liability_protection_status = if overall_score >= 90.0 {
+        "PROTECTED"
+    } else if overall_score >= 70.0 {
+        "AT_RISK"
+    } else {
+        "EXPOSED"
+    }.to_string();
+
+    // Generate recommendations
+    let mut recommendations = Vec::new();
+    if !article20_compliant {
+        recommendations.push(format!(
+            "Establish management accountability framework. Current score: {:.1}% (NIS2 Article 20)",
+            article20_score
+        ));
+    }
+    if !article21_compliant {
+        recommendations.push(format!(
+            "Implement remaining baseline cybersecurity measures. {}/{} measures implemented (NIS2 Article 21)",
+            implemented_count, total_measures
+        ));
+    }
+    if !article23_compliant {
+        recommendations.push(format!(
+            "Ensure all incidents are reported. Current compliance: {:.1}% (NIS2 Article 23)",
+            article23_compliance_rate
+        ));
+    }
+    if overall_score < 90.0 {
+        recommendations.push(format!(
+            "Improve overall NIS2 compliance from {:.1}% to 90%+ to achieve PROTECTED liability status",
+            overall_score
+        ));
+    }
+
+    HttpResponse::Ok().json(NIS2ComplianceReport {
+        overall_score,
+        article20_compliant,
+        article21_compliant,
+        article23_compliant,
+        article20_score,
+        article21_score,
+        article23_score,
+        management_accountability,
+        baseline_measures: NIS2BaselineMeasures {
+            measures_implemented,
+            total_measures,
+            implemented_count,
+            compliance_rate: article21_score,
+        },
+        incident_reporting: NIS2IncidentReporting {
+            total_incidents,
+            incidents_reported,
+            incidents_pending,
+            average_reporting_time_hours: average_reporting_time,
+            compliance_rate: article23_compliance_rate,
+            early_warning_indicators,
+        },
+        liability_protection_status,
+        recommendations,
+    })
+}
+
+// ========== AI EXPLAINABILITY & OBSERVABILITY ==========
+
+/// Get AI decision explanation
+#[derive(Serialize, ToSchema)]
+pub struct AIDecisionExplanationResponse {
+    pub decision_id: String,
+    pub seal_id: String,
+    pub agent_id: String,
+    pub decision_type: String,
+    pub decision_outcome: String,
+    pub explanation_text: String,
+    pub feature_importance: Option<serde_json::Value>,
+    pub decision_path: Option<serde_json::Value>,
+    pub confidence_score: Option<f64>,
+    pub created_at: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/models/{model_id}/explanations/{decision_id}",
+    tag = "AI Explainability",
+    params(
+        ("model_id" = String, Path, description = "Model ID"),
+        ("decision_id" = String, Path, description = "Decision ID"),
+    ),
+    responses(
+        (status = 200, description = "Decision explanation", body = AIDecisionExplanationResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_decision_explanation(
+    path: web::Path<(String, String)>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "explainability", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let (_model_id, decision_id) = path.into_inner();
+
+    #[derive(sqlx::FromRow)]
+    struct ExplanationRow {
+        decision_id: String,
+        seal_id: String,
+        agent_id: String,
+        decision_type: String,
+        decision_outcome: String,
+        explanation_text: String,
+        feature_importance: Option<serde_json::Value>,
+        decision_path: Option<serde_json::Value>,
+        confidence_score: Option<f64>,
+        created_at: DateTime<Utc>,
+    }
+
+    let explanation: Option<ExplanationRow> = sqlx::query_as(
+        "SELECT decision_id, seal_id, agent_id, decision_type, decision_outcome,
+                explanation_text, feature_importance, decision_path, confidence_score, created_at
+         FROM ai_decision_explanations
+         WHERE decision_id = $1"
+    )
+    .bind(&decision_id)
+    .fetch_optional(&data.db_pool)
+    .await
+    .ok()
+    .flatten();
+
+    match explanation {
+        Some(exp) => HttpResponse::Ok().json(AIDecisionExplanationResponse {
+            decision_id: exp.decision_id,
+            seal_id: exp.seal_id,
+            agent_id: exp.agent_id,
+            decision_type: exp.decision_type,
+            decision_outcome: exp.decision_outcome,
+            explanation_text: exp.explanation_text,
+            feature_importance: exp.feature_importance,
+            decision_path: exp.decision_path,
+            confidence_score: exp.confidence_score,
+            created_at: exp.created_at.to_rfc3339(),
+        }),
+        None => HttpResponse::NotFound().json(serde_json::json!({
+            "error": "DECISION_NOT_FOUND",
+            "message": "Decision explanation not found"
+        }))
+    }
+}
+
+/// Get feature importance for a model
+#[derive(Serialize, ToSchema)]
+pub struct FeatureImportanceResponse {
+    pub feature_name: String,
+    pub importance_score: f64,
+    pub importance_rank: Option<i32>,
+    pub feature_type: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/models/{model_id}/feature-importance",
+    tag = "AI Explainability",
+    params(
+        ("model_id" = String, Path, description = "Model ID"),
+    ),
+    responses(
+        (status = 200, description = "Feature importance", body = FeatureImportanceResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_feature_importance(
+    model_id: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "explainability", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let model_id = model_id.into_inner();
+
+    match crate::core::ai_explainability::AIExplainabilityService::get_feature_importance(
+        &data.db_pool,
+        &model_id,
+    ).await {
+        Ok(features) => {
+            HttpResponse::Ok().json(features.iter().map(|f| FeatureImportanceResponse {
+                feature_name: f.feature_name.clone(),
+                importance_score: f.importance_score,
+                importance_rank: f.importance_rank,
+                feature_type: f.feature_type.clone(),
+            }).collect::<Vec<_>>())
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "FEATURE_IMPORTANCE_FETCH_FAILED",
+            "message": format!("Failed to fetch feature importance: {}", e)
+        }))
+    }
+}
+
+/// Detect model drift
+#[derive(Serialize, ToSchema)]
+pub struct ModelDriftResponse {
+    pub model_id: String,
+    pub drift_type: String,
+    pub drift_score: f64,
+    pub drift_severity: String,
+    pub affected_features: Vec<String>,
+    pub baseline_date: Option<String>,
+    pub detected_at: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/models/{model_id}/drift",
+    tag = "AI Explainability",
+    params(
+        ("model_id" = String, Path, description = "Model ID"),
+    ),
+    responses(
+        (status = 200, description = "Model drift information", body = ModelDriftResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_model_drift(
+    model_id: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "explainability", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let model_id = model_id.into_inner();
+
+    match crate::core::ai_explainability::AIExplainabilityService::detect_model_drift(
+        &data.db_pool,
+        &model_id,
+    ).await {
+        Ok(Some(drift)) => HttpResponse::Ok().json(ModelDriftResponse {
+            model_id: drift.model_id,
+            drift_type: drift.drift_type,
+            drift_score: drift.drift_score,
+            drift_severity: drift.drift_severity,
+            affected_features: drift.affected_features,
+            baseline_date: drift.baseline_date.map(|dt| dt.to_rfc3339()),
+            detected_at: drift.detected_at.to_rfc3339(),
+        }),
+        Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
+            "status": "NO_DRIFT_DETECTED",
+            "message": "No model drift detected in the last 7 days"
+        })),
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "DRIFT_DETECTION_FAILED",
+            "message": format!("Failed to detect drift: {}", e)
+        }))
+    }
+}
+
+// ========== CONFIGURATION DRIFT DETECTION ==========
+
+/// Create configuration baseline
+#[derive(Deserialize, ToSchema)]
+pub struct CreateBaselineRequest {
+    pub baseline_name: String,
+    pub baseline_type: String,
+    pub baseline_config: serde_json::Value,
+    pub is_golden_image: bool,
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BaselineResponse {
+    pub id: String,
+    pub baseline_name: String,
+    pub baseline_type: String,
+    pub is_golden_image: bool,
+    pub created_at: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/configuration/baselines",
+    tag = "Configuration Drift",
+    request_body = CreateBaselineRequest,
+    responses(
+        (status = 200, description = "Baseline created", body = BaselineResponse),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn create_baseline(
+    req: web::Json<CreateBaselineRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "configuration", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let req_data = req.into_inner();
+
+    match crate::core::configuration_drift::ConfigurationDriftService::create_baseline(
+        &data.db_pool,
+        &req_data.baseline_name,
+        &req_data.baseline_type,
+        &req_data.baseline_config,
+        req_data.is_golden_image,
+        Some(&claims.sub),
+        req_data.description.as_deref(),
+    ).await {
+        Ok(baseline_id) => {
+            HttpResponse::Ok().json(BaselineResponse {
+                id: baseline_id.to_string(),
+                baseline_name: req_data.baseline_name,
+                baseline_type: req_data.baseline_type,
+                is_golden_image: req_data.is_golden_image,
+                created_at: Utc::now().to_rfc3339(),
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "BASELINE_CREATION_FAILED",
+            "message": format!("Failed to create baseline: {}", e)
+        }))
+    }
+}
+
+/// Detect configuration drift
+#[derive(Deserialize, ToSchema)]
+pub struct DetectDriftRequest {
+    pub current_config: serde_json::Value,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DriftDetectionResponse {
+    pub drifts: Vec<DriftResponse>,
+    pub total_count: usize,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DriftResponse {
+    pub id: String,
+    pub baseline_id: String,
+    pub drift_type: String,
+    pub drift_severity: String,
+    pub changed_path: String,
+    pub detected_at: String,
+    pub auto_remediated: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/configuration/baselines/{baseline_id}/detect-drift",
+    tag = "Configuration Drift",
+    params(
+        ("baseline_id" = Uuid, Path, description = "Baseline ID"),
+    ),
+    request_body = DetectDriftRequest,
+    responses(
+        (status = 200, description = "Drift detected"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn detect_configuration_drift(
+    baseline_id: web::Path<Uuid>,
+    req: web::Json<DetectDriftRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "configuration", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let baseline_id = baseline_id.into_inner();
+    let req_data = req.into_inner();
+
+    match crate::core::configuration_drift::ConfigurationDriftService::detect_drift(
+        &data.db_pool,
+        baseline_id,
+        &req_data.current_config,
+    ).await {
+        Ok(drifts) => {
+            HttpResponse::Ok().json(DriftDetectionResponse {
+                drifts: drifts.iter().map(|d| DriftResponse {
+                    id: d.id.to_string(),
+                    baseline_id: d.baseline_id.to_string(),
+                    drift_type: d.drift_type.clone(),
+                    drift_severity: d.drift_severity.clone(),
+                    changed_path: d.changed_path.clone(),
+                    detected_at: d.detected_at.to_rfc3339(),
+                    auto_remediated: d.auto_remediated,
+                }).collect(),
+                total_count: drifts.len(),
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "DRIFT_DETECTION_FAILED",
+            "message": format!("Failed to detect drift: {}", e)
+        }))
+    }
+}
+
+/// Get configuration drifts
+#[utoipa::path(
+    get,
+    path = "/configuration/baselines/{baseline_id}/drifts",
+    tag = "Configuration Drift",
+    params(
+        ("acknowledged" = Option<bool>, Query, description = "Filter by acknowledged status"),
+    ),
+    responses(
+        (status = 200, description = "Configuration drifts"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_configuration_drifts(
+    baseline_id: web::Path<Uuid>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "configuration", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let baseline_id = baseline_id.into_inner();
+    let acknowledged = query.get("acknowledged").and_then(|s| s.parse::<bool>().ok());
+
+    match crate::core::configuration_drift::ConfigurationDriftService::get_drifts(
+        &data.db_pool,
+        baseline_id,
+        acknowledged,
+    ).await {
+        Ok(drifts) => {
+            HttpResponse::Ok().json(drifts.iter().map(|d| serde_json::json!({
+                "id": d.id,
+                "baseline_id": d.baseline_id,
+                "drift_type": d.drift_type,
+                "drift_severity": d.drift_severity,
+                "changed_path": d.changed_path,
+                "old_value": d.old_value,
+                "new_value": d.new_value,
+                "detected_at": d.detected_at.to_rfc3339(),
+                "auto_remediated": d.auto_remediated,
+                "acknowledged": d.acknowledged,
+            })).collect::<Vec<_>>())
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "DRIFT_FETCH_FAILED",
+            "message": format!("Failed to fetch drifts: {}", e)
+        }))
+    }
+}
+
+// ========== MULTI-CLOUD NATIVE INTEGRATIONS ==========
+
+/// Register cloud provider
+#[derive(Deserialize, ToSchema)]
+pub struct RegisterCloudProviderRequest {
+    pub provider: String, // AWS, AZURE, GCP
+    pub account_id: String,
+    pub region: Option<String>,
+    pub credentials_encrypted: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CloudProviderResponse {
+    pub id: String,
+    pub provider: String,
+    pub account_id: String,
+    pub region: Option<String>,
+    pub is_active: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CloudSyncResponse {
+    pub sync_id: String,
+    pub provider: String,
+    pub account_id: String,
+    pub status: String,
+    pub started_at: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CloudComplianceSummaryResponse {
+    pub provider: String,
+    pub total_resources: i32,
+    pub compliant_resources: i32,
+    pub non_compliant_resources: i32,
+    pub compliance_percentage: f64,
+}
+
+#[utoipa::path(
+    post,
+    path = "/cloud/providers",
+    tag = "Multi-Cloud",
+    request_body = RegisterCloudProviderRequest,
+    responses(
+        (status = 200, description = "Provider registered", body = CloudProviderResponse),
+        (status = 400, description = "Invalid request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn register_cloud_provider(
+    req: web::Json<RegisterCloudProviderRequest>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "cloud", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let req_data = req.into_inner();
+
+    match crate::integration::multi_cloud::MultiCloudService::register_provider(
+        &data.db_pool,
+        &req_data.provider,
+        &req_data.account_id,
+        req_data.region.as_deref(),
+        &req_data.credentials_encrypted,
+        Some(&claims.sub),
+    ).await {
+        Ok(_config_id) => {
+            HttpResponse::Ok().json(CloudProviderResponse {
+                id: Uuid::new_v4().to_string(),
+                provider: req_data.provider,
+                account_id: req_data.account_id,
+                region: req_data.region,
+                is_active: true,
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "PROVIDER_REGISTRATION_FAILED",
+            "message": format!("Failed to register provider: {}", e)
+        }))
+    }
+}
+
+/// Sync cloud compliance
+#[utoipa::path(
+    post,
+    path = "/cloud/providers/{provider}/sync",
+    tag = "Multi-Cloud",
+    params(
+        ("account_id" = String, Query, description = "Cloud account ID"),
+    ),
+    responses(
+        (status = 200, description = "Sync started", body = CloudSyncResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn sync_cloud_compliance(
+    provider: web::Path<String>,
+    query: web::Query<std::collections::HashMap<String, String>>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "cloud", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let provider = provider.into_inner();
+    let account_id = match query.get("account_id") {
+        Some(id) => id,
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "MISSING_ACCOUNT_ID",
+                "message": "account_id is required"
+            }));
+        }
+    };
+
+    match crate::integration::multi_cloud::MultiCloudService::sync_cloud_compliance(
+        &data.db_pool,
+        &provider,
+        account_id,
+    ).await {
+        Ok(sync_id) => {
+            HttpResponse::Ok().json(CloudSyncResponse {
+                sync_id,
+                provider,
+                account_id: account_id.to_string(),
+                status: "PENDING".to_string(),
+                started_at: Utc::now().to_rfc3339(),
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "SYNC_FAILED",
+            "message": format!("Failed to sync: {}", e)
+        }))
+    }
+}
+
+/// Get cloud compliance summary
+#[utoipa::path(
+    get,
+    path = "/cloud/providers/{provider}/compliance",
+    tag = "Multi-Cloud",
+    responses(
+        (status = 200, description = "Compliance summary", body = CloudComplianceSummaryResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(
+        ("bearer" = [])
+    )
+)]
+pub async fn get_cloud_compliance_summary(
+    provider: web::Path<String>,
+    data: web::Data<AppState>,
+    http_req: HttpRequest,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "cloud", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let provider = provider.into_inner();
+
+    match crate::integration::multi_cloud::MultiCloudService::get_compliance_summary(
+        &data.db_pool,
+        &provider,
+    ).await {
+        Ok(summary) => {
+            HttpResponse::Ok().json(CloudComplianceSummaryResponse {
+                provider: summary.provider,
+                total_resources: summary.total_resources,
+                compliant_resources: summary.compliant_resources,
+                non_compliant_resources: summary.non_compliant_resources,
+                compliance_percentage: summary.compliance_percentage,
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "SUMMARY_FETCH_FAILED",
+            "message": format!("Failed to fetch summary: {}", e)
+        }))
     }
 }

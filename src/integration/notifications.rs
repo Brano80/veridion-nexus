@@ -41,6 +41,10 @@ pub enum NotificationType {
     ObjectionReceived,   // GDPR Article 21
     RectificationDone,   // GDPR Article 19
     ErasureDone,         // GDPR Article 17
+    ShadowModeViolation,  // Shadow mode detected violation
+    CircuitBreakerOpened,
+    PolicyHealthDegraded,
+    PolicyHealthCritical, // Circuit breaker opened
 }
 
 impl ToString for NotificationType {
@@ -53,6 +57,10 @@ impl ToString for NotificationType {
             NotificationType::ObjectionReceived => "OBJECTION_RECEIVED".to_string(),
             NotificationType::RectificationDone => "RECTIFICATION_DONE".to_string(),
             NotificationType::ErasureDone => "ERASURE_DONE".to_string(),
+            NotificationType::ShadowModeViolation => "SHADOW_MODE_VIOLATION".to_string(),
+            NotificationType::CircuitBreakerOpened => "CIRCUIT_BREAKER_OPENED".to_string(),
+            NotificationType::PolicyHealthDegraded => "POLICY_HEALTH_DEGRADED".to_string(),
+            NotificationType::PolicyHealthCritical => "POLICY_HEALTH_CRITICAL".to_string(),
         }
     }
 }
@@ -582,6 +590,169 @@ impl NotificationService {
             last_result = self.send_notification(db_pool, req).await;
             if last_result.is_ok() {
                 break; // Success, no need to try other channels
+            }
+        }
+
+        last_result
+    }
+
+    /// Send shadow mode violation alert
+    /// Alerts when shadow mode detects a violation that would be blocked in enforcing mode
+    pub async fn send_shadow_mode_alert(
+        &self,
+        db_pool: &PgPool,
+        agent_id: &str,
+        action: &str,
+        target_region: &str,
+        policy_applied: &str,
+        user_id: Option<&str>,
+    ) -> Result<String, String> {
+        // Get user notification preferences
+        let user_id_str = user_id.unwrap_or("system");
+        let preferred_channels: Vec<String> = sqlx::query_scalar(
+            "SELECT channel FROM user_notification_preferences 
+             WHERE user_id::text = $1 AND enabled = true
+             UNION SELECT 'EMAIL' WHERE NOT EXISTS (
+                 SELECT 1 FROM user_notification_preferences WHERE user_id::text = $1
+             )"
+        )
+        .bind(user_id_str)
+        .fetch_all(db_pool)
+        .await
+        .unwrap_or_else(|_| vec!["EMAIL".to_string()]);
+
+        let channel_to_use = if preferred_channels.contains(&"EMAIL".to_string()) {
+            NotificationChannel::Email
+        } else if preferred_channels.contains(&"SMS".to_string()) {
+            NotificationChannel::Sms
+        } else {
+            NotificationChannel::InApp
+        };
+
+        let subject = format!("Shadow Mode Alert: Violation Detected - {}", policy_applied);
+        let body = format!(
+            "Shadow Mode has detected a violation that would be blocked in enforcing mode:\n\n\
+            Agent ID: {}\n\
+            Action: {}\n\
+            Target Region: {}\n\
+            Policy: {}\n\
+            Timestamp: {}\n\n\
+            This action was allowed in shadow mode for testing purposes. Review the policy before switching to ENFORCING mode.\n\n\
+            View details in the Shadow Mode Analytics dashboard.",
+            agent_id,
+            action,
+            target_region,
+            policy_applied,
+            Utc::now().format("%Y-%m-%d %H:%M:%S")
+        );
+
+        let request = NotificationRequest {
+            user_id: user_id_str.to_string(),
+            notification_type: NotificationType::ShadowModeViolation,
+            channel: channel_to_use,
+            subject: Some(subject),
+            body,
+            language: Some("en".to_string()),
+            related_entity_type: Some("SHADOW_MODE_LOG".to_string()),
+            related_entity_id: Some(agent_id.to_string()),
+        };
+
+        // Send to all preferred channels
+        let mut last_result = Err("No channels available".to_string());
+        for ch_str in &preferred_channels {
+            let ch = match ch_str.as_str() {
+                "EMAIL" => NotificationChannel::Email,
+                "SMS" => NotificationChannel::Sms,
+                "IN_APP" => NotificationChannel::InApp,
+                _ => continue,
+            };
+
+            let mut req = request.clone();
+            req.channel = ch;
+            last_result = self.send_notification(db_pool, req).await;
+            if last_result.is_ok() {
+                break; // Success, no need to try other channels
+            }
+        }
+
+        last_result
+    }
+
+    /// Send circuit breaker opened alert
+    pub async fn send_circuit_breaker_alert(
+        &self,
+        db_pool: &PgPool,
+        policy_id: &str,
+        policy_type: &str,
+        error_rate: f64,
+        error_count: i64,
+        total_requests: i64,
+        user_id: Option<&str>,
+    ) -> Result<String, String> {
+        let user_id_str = user_id.unwrap_or("system");
+        let preferred_channels: Vec<String> = sqlx::query_scalar(
+            "SELECT channel FROM user_notification_preferences 
+             WHERE user_id::text = $1 AND enabled = true
+             UNION SELECT 'EMAIL' WHERE NOT EXISTS (
+                 SELECT 1 FROM user_notification_preferences WHERE user_id::text = $1
+             )"
+        )
+        .bind(user_id_str)
+        .fetch_all(db_pool)
+        .await
+        .unwrap_or_else(|_| vec!["EMAIL".to_string()]);
+
+        let channel_to_use = if preferred_channels.contains(&"EMAIL".to_string()) {
+            NotificationChannel::Email
+        } else if preferred_channels.contains(&"SMS".to_string()) {
+            NotificationChannel::Sms
+        } else {
+            NotificationChannel::InApp
+        };
+
+        let subject = format!("Circuit Breaker Opened: {} Policy", policy_type);
+        let body = format!(
+            "Circuit breaker has been automatically opened for policy {}:\n\n\
+            Policy Type: {}\n\
+            Error Rate: {:.2}%\n\
+            Error Count: {}\n\
+            Total Requests: {}\n\
+            Timestamp: {}\n\n\
+            The policy has been temporarily disabled to prevent further errors. Review the policy configuration and error logs before re-enabling.\n\n\
+            You can manually close the circuit breaker from the Circuit Breaker dashboard.",
+            policy_id,
+            policy_type,
+            error_rate,
+            error_count,
+            total_requests,
+            Utc::now().format("%Y-%m-%d %H:%M:%S")
+        );
+
+        let request = NotificationRequest {
+            user_id: user_id_str.to_string(),
+            notification_type: NotificationType::CircuitBreakerOpened,
+            channel: channel_to_use,
+            subject: Some(subject),
+            body,
+            language: Some("en".to_string()),
+            related_entity_type: Some("POLICY_VERSION".to_string()),
+            related_entity_id: Some(policy_id.to_string()),
+        };
+
+        let mut last_result = Err("No channels available".to_string());
+        for ch_str in &preferred_channels {
+            let ch = match ch_str.as_str() {
+                "EMAIL" => NotificationChannel::Email,
+                "SMS" => NotificationChannel::Sms,
+                "IN_APP" => NotificationChannel::InApp,
+                _ => continue,
+            };
+
+            let mut req = request.clone();
+            req.channel = ch;
+            last_result = self.send_notification(db_pool, req).await;
+            if last_result.is_ok() {
+                break;
             }
         }
 

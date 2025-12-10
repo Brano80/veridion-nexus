@@ -353,3 +353,64 @@ impl From<ComplianceRecordDb> for crate::core::annex_iv::ComplianceRecord {
     }
 }
 
+/// Database model for assets
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AssetDb {
+    pub id: Uuid,
+    pub asset_id: String,
+    pub asset_name: String,
+    pub asset_type: String,
+    pub business_function: String,
+    pub department: Option<String>,
+    pub owner: Option<String>,
+    pub location: Option<String>,
+    pub risk_profile: String,
+    pub metadata: serde_json::Value,
+    pub tags: Option<Vec<String>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub created_by: Option<String>,
+    pub is_active: bool,
+}
+
+/// Database model for asset-agent mapping
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AssetAgentMappingDb {
+    pub id: Uuid,
+    pub asset_id: Uuid,
+    pub agent_id: String,
+    pub mapping_type: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Database model for business functions
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct BusinessFunctionDb {
+    pub id: Uuid,
+    pub function_code: String,
+    pub function_name: String,
+    pub description: Option<String>,
+    pub default_risk_level: String,
+    pub compliance_requirements: Option<Vec<String>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Database model for asset-based policies
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AssetPolicyDb {
+    pub id: Uuid,
+    pub policy_name: String,
+    pub policy_type: String,
+    pub business_function_filter: Option<String>,
+    pub department_filter: Option<String>,
+    pub location_filter: Option<String>,
+    pub risk_profile_filter: Option<String>,
+    pub asset_tags_filter: Option<Vec<String>>,
+    pub policy_config: serde_json::Value,
+    pub is_active: bool,
+    pub priority: i32,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub created_by: Option<String>,
+}
+

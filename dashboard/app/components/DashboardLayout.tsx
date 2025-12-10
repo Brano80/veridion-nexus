@@ -23,6 +23,14 @@ import {
   Lock,
   Ban,
   Bot,
+  TestTube,
+  Package,
+  EyeOff,
+  BarChart3,
+  Building2,
+  PieChart,
+  Globe,
+  Activity,
 } from "lucide-react";
 import { useState } from "react";
 import { useModules } from "../hooks/useModules";
@@ -36,6 +44,16 @@ const coreNavigation = [
   { name: "Processing Restrictions", href: "/processing-restrictions", icon: Lock, module: "module_data_subject_rights" },
   { name: "Processing Objections", href: "/processing-objections", icon: Ban, module: "module_data_subject_rights" },
   { name: "Automated Decisions", href: "/automated-decisions", icon: Bot, module: "module_data_subject_rights" },
+  { name: "Policy Impact", href: "/policy-impact", icon: TestTube, module: null },
+  { name: "Shadow Mode", href: "/shadow-mode", icon: EyeOff, module: null },
+  { name: "Circuit Breaker", href: "/circuit-breaker", icon: Activity, module: null },
+  { name: "Canary Deployment", href: "/canary", icon: BarChart3, module: null },
+  { name: "Vendor Risk", href: "/vendor-risk", icon: Building2, module: null },
+  { name: "Business Functions", href: "/business-functions", icon: PieChart, module: null },
+  { name: "Location Policies", href: "/location-policies", icon: Globe, module: null },
+  { name: "Executive Dashboard", href: "/executive", icon: Shield, module: null },
+  { name: "Policy Health", href: "/policy-health", icon: Activity, module: null },
+  { name: "Asset Registry", href: "/assets", icon: Package, module: null },
   { name: "Audit & Reports", href: "/audit-reports", icon: FileText, module: null },
   { name: "Settings", href: "/settings", icon: Settings, module: null },
 ];

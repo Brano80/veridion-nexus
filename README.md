@@ -551,102 +551,17 @@ For production deployments where you need:
 - **Professional services** (implementation consulting, custom integrations)
 - **Priority features** (early access to new modules)
 
-### Pricing Tiers
+### Pricing 
 
-#### Tier 1: Starter (€35,000/year)
-
-**Deployment Mode**: Embedded (SDK-First)
-
-**Target**: Series A fintech/insurtech, 1-10 employees
-
-**Core Modules** (Always Included):
-- Sovereign Lock, Crypto-Shredder, Privacy Bridge
-- Audit Log Chain, Annex IV Compiler
-
-**Operational Modules**: Choose 2 included
-- Options: Data Subject Rights, Human Oversight, Risk Assessment, Breach Management
-
-**Includes**:
-- Up to 3 high-risk AI systems
-- All 6 AI Platform SDKs (Azure, AWS, GCP, LangChain, OpenAI, HuggingFace)
-- Email support (48h SLA)
-- Standard Annex IV templates
-- Community documentation
-
-**Ideal for**: Fintech startups, small healthcare providers
-
-#### Tier 2: Professional (€120,000/year) 
-
-**Deployment Mode**: Embedded OR Proxy (customer choice)
-
-**Target**: Series B-D fintech/insurtech, 50-500 employees
-
-**Core Modules** (Always Included):
-- Sovereign Lock, Crypto-Shredder, Privacy Bridge
-- Audit Log Chain, Annex IV Compiler
-
-**Operational Modules**: All 10 modules included
-- Data Subject Rights, Human Oversight, Risk Assessment
-- Breach Management, Consent Management, DPIA Tracking
-- Retention Policies, Post-Market Monitoring
-- Green AI Telemetry, AI-BOM
-
-**Includes**:
-- Up to 15 high-risk AI systems
-- All 6 AI Platform SDKs
-- Slack channel support (12h SLA)
-- Webhook integrations
-- Monthly compliance reports
-- Quarterly business reviews
-
-**Ideal for**: Regional banks, mid-size insurance companies, growing enterprises
-
-#### Tier 3: Enterprise (€350,000/year base)
-
-**Deployment Mode**: Full Governance (complete platform)
-
-**Target**: Banks, large insurers, public companies, 1000+ employees
-
-**Core Modules** (Always Included):
-- Sovereign Lock, Crypto-Shredder, Privacy Bridge
-- Audit Log Chain, Annex IV Compiler
-
-**Operational Modules**: All included + priority feature requests
-
-**Includes**:
-- Up to 50 high-risk AI systems (first 50 included)
-- Deployment Options: SaaS, On-Premise, or Hybrid
-- All 6 AI Platform SDKs + custom integrations
-- Dedicated Customer Success Manager
-- 24/7 phone support
-- 99.9% SLA guarantee
-- Custom integrations (40 hours/year included)
-- Regulatory sandbox application support
-- Audit defense package (expert testimony)
-- Private Slack channel with engineering team
-
-**Overage**: €12,000 per 10 additional systems (after first 50)
-
-**Ideal for**: Tier 1 banks, large healthcare systems, systemically important institutions
-
-### Early Adopter Program
-
-**First 10 customers get 50% off** their first year subscription.
+pay-as-you-grow
 
 **Design Partners**: Looking for 2-3 beta customers for free pilot program.
 
-### Add-Ons (All Tiers)
-
-- **Module Add-Ons** (Starter tier only): Additional Operational Module: €10,000/year each
-- **Deployment Upgrades**: Embedded → Proxy Mode: +€25,000/year | Embedded/Proxy → Full Governance: +€50,000/year
-- **Transaction-Based**: eIDAS Seals: €0.10 per seal (volume discounts available) | High-Volume Package: €50,000/year (unlimited seals)
-- **Professional Services**: Implementation Consulting: €2,500/day | Custom Integration: €5,000 per integration | Compliance Audit Support: €10,000 per audit
-
-### Contact for Commercial Licensing
 
 
+### Contact for Commercial Licensing and Partnership:
 
- **Partnership**: alchemistofconsciousness@gmail.com
+ alchemistofconsciousness@gmail.com
 
 ---
 
