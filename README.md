@@ -1,6 +1,6 @@
 # VERIDION NEXUS
 
-**DORA-Compliant AI Governance for Financial Entities** • Technical Enforcement of DORA Article 28 (2025) + EU AI Act (2027)
+**AI Governance for Financial Entities** • Technical Enforcement of DORA & EU AI Act
 
 Make EU AI Act violations technically impossible, not just policy violations.
 
