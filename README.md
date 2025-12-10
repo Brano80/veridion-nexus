@@ -1,6 +1,6 @@
 # VERIDION NEXUS
 
-**DORA-Compliant AI Governance for Financial Entities** • Technical Enforcement of DORA Article 28 (2025) + EU AI Act (2027)
+**AI Governance for Financial Entities** • Technical Enforcement of DORA & EU AI Act
 
 Make EU AI Act violations technically impossible, not just policy violations.
 
@@ -466,12 +466,12 @@ Veridion Nexus provides SDKs for seamless integration with major AI platforms. A
 
 ### Supported Platforms
 
-- ✅ **Azure AI** - Azure OpenAI and Azure AI services
-- ✅ **AWS Bedrock** - Amazon Bedrock models (EU regions only)
-- ✅ **GCP Vertex AI** - Google Cloud Vertex AI (EU regions only)
-- ✅ **LangChain** - Any LangChain-compatible LLM
-- ✅ **OpenAI MCP** - OpenAI API with Model Context Protocol
-- ✅ **HuggingFace** - Transformers pipelines
+- **Azure AI** - Azure OpenAI and Azure AI services
+- **AWS Bedrock** - Amazon Bedrock models (EU regions only)
+- **GCP Vertex AI** - Google Cloud Vertex AI (EU regions only)
+- **LangChain** - Any LangChain-compatible LLM
+- **OpenAI MCP** - OpenAI API with Model Context Protocol
+- **HuggingFace** - Transformers pipelines
 
 ### Quick Start
 
@@ -510,11 +510,11 @@ response = veridion_llm("What is GDPR?")
 
 ### Features
 
-- ✅ **Automatic Compliance Logging**: All AI operations logged automatically
-- ✅ **Data Sovereignty Enforcement**: Non-EU regions blocked (AWS, GCP)
-- ✅ **Energy Tracking**: GPU/CPU power consumption and carbon footprint
-- ✅ **Error Handling**: Errors logged without breaking your application
-- ✅ **Async Support**: Non-blocking compliance logging
+- **Automatic Compliance Logging**: All AI operations logged automatically
+- **Data Sovereignty Enforcement**: Non-EU regions blocked (AWS, GCP)
+- **Energy Tracking**: GPU/CPU power consumption and carbon footprint
+- **Error Handling**: Errors logged without breaking your application
+- **Async Support**: Non-blocking compliance logging
 
 See `sdks/README.md` for complete documentation and examples.
 
@@ -551,17 +551,87 @@ For production deployments where you need:
 - **Professional services** (implementation consulting, custom integrations)
 - **Priority features** (early access to new modules)
 
-### Pricing 
+### Tiers
 
-pay-as-you-grow
+#### Tier 1: Starter 
+
+**Deployment Mode**: Embedded (SDK-First)
+
+**Target**: Series A fintech/insurtech,SMEs, 1-10 employees
+
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
+
+**Operational Modules**: Choose 2 included
+- Options: Data Subject Rights, Human Oversight, Risk Assessment, Breach Management
+
+**Includes**:
+- Up to 3 high-risk AI systems
+- All 6 AI Platform SDKs (Azure, AWS, GCP, LangChain, OpenAI, HuggingFace)
+- Email support (48h SLA)
+- Standard Annex IV templates
+- Community documentation
+
+**Ideal for**: Fintech startups, small healthcare providers. SMEs
+
+#### Tier 2: Professional  
+
+**Deployment Mode**: Embedded OR Proxy (customer choice)
+
+**Target**: Series B-D fintech/insurtech, 50-500 employees
+
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
+
+**Operational Modules**: All 10 modules included
+- Data Subject Rights, Human Oversight, Risk Assessment
+- Breach Management, Consent Management, DPIA Tracking
+- Retention Policies, Post-Market Monitoring
+- Green AI Telemetry, AI-BOM
+
+**Includes**:
+- Up to 15 high-risk AI systems
+- All 6 AI Platform SDKs
+- Slack channel support (12h SLA)
+- Webhook integrations
+- Monthly compliance reports
+- Quarterly business reviews
+
+**Ideal for**: Regional banks, mid-size insurance companies, growing enterprises
+
+#### Tier 3: Enterprise 
+
+**Deployment Mode**: Full Governance (complete platform)
+
+**Target**: Banks, large insurers, public companies, 1000+ employees
+
+**Core Modules** (Always Included):
+- Sovereign Lock, Crypto-Shredder, Privacy Bridge
+- Audit Log Chain, Annex IV Compiler
+
+**Operational Modules**: All included + priority feature requests
+
+**Includes**:
+- Up to 50 high-risk AI systems (first 50 included)
+- Deployment Options: SaaS, On-Premise, or Hybrid
+- All 6 AI Platform SDKs + custom integrations
+- Dedicated Customer Success Manager
+- 24/7 phone support
+- 99.9% SLA guarantee
+- Custom integrations (40 hours/year included)
+- Regulatory sandbox application support
+- Audit defense package (expert testimony)
+- Private Slack channel with engineering team
+
+**Ideal for**: Tier 1 banks, large healthcare systems, systemically important institutions
+
 
 **Design Partners**: Looking for 2-3 beta customers for free pilot program.
 
 
-
-### Contact for Commercial Licensing and Partnership:
-
- alchemistofconsciousness@gmail.com
+ **Partnership**: alchemistofconsciousness@gmail.com
 
 ---
 
