@@ -466,12 +466,12 @@ Veridion Nexus provides SDKs for seamless integration with major AI platforms. A
 
 ### Supported Platforms
 
-- ✅ **Azure AI** - Azure OpenAI and Azure AI services
-- ✅ **AWS Bedrock** - Amazon Bedrock models (EU regions only)
-- ✅ **GCP Vertex AI** - Google Cloud Vertex AI (EU regions only)
-- ✅ **LangChain** - Any LangChain-compatible LLM
-- ✅ **OpenAI MCP** - OpenAI API with Model Context Protocol
-- ✅ **HuggingFace** - Transformers pipelines
+- **Azure AI** - Azure OpenAI and Azure AI services
+- **AWS Bedrock** - Amazon Bedrock models (EU regions only)
+- **GCP Vertex AI** - Google Cloud Vertex AI (EU regions only)
+- **LangChain** - Any LangChain-compatible LLM
+- **OpenAI MCP** - OpenAI API with Model Context Protocol
+- **HuggingFace** - Transformers pipelines
 
 ### Quick Start
 
@@ -510,11 +510,11 @@ response = veridion_llm("What is GDPR?")
 
 ### Features
 
-- ✅ **Automatic Compliance Logging**: All AI operations logged automatically
-- ✅ **Data Sovereignty Enforcement**: Non-EU regions blocked (AWS, GCP)
-- ✅ **Energy Tracking**: GPU/CPU power consumption and carbon footprint
-- ✅ **Error Handling**: Errors logged without breaking your application
-- ✅ **Async Support**: Non-blocking compliance logging
+- **Automatic Compliance Logging**: All AI operations logged automatically
+- **Data Sovereignty Enforcement**: Non-EU regions blocked (AWS, GCP)
+- **Energy Tracking**: GPU/CPU power consumption and carbon footprint
+- **Error Handling**: Errors logged without breaking your application
+- **Async Support**: Non-blocking compliance logging
 
 See `sdks/README.md` for complete documentation and examples.
 
@@ -551,13 +551,13 @@ For production deployments where you need:
 - **Professional services** (implementation consulting, custom integrations)
 - **Priority features** (early access to new modules)
 
-### Pricing Tiers
+### Tiers
 
-#### Tier 1: Starter (€35,000/year)
+#### Tier 1: Starter 
 
 **Deployment Mode**: Embedded (SDK-First)
 
-**Target**: Series A fintech/insurtech, 1-10 employees
+**Target**: Series A fintech/insurtech,SMEs, 1-10 employees
 
 **Core Modules** (Always Included):
 - Sovereign Lock, Crypto-Shredder, Privacy Bridge
@@ -573,9 +573,9 @@ For production deployments where you need:
 - Standard Annex IV templates
 - Community documentation
 
-**Ideal for**: Fintech startups, small healthcare providers
+**Ideal for**: Fintech startups, small healthcare providers. SMEs
 
-#### Tier 2: Professional (€120,000/year) 
+#### Tier 2: Professional  
 
 **Deployment Mode**: Embedded OR Proxy (customer choice)
 
@@ -601,7 +601,7 @@ For production deployments where you need:
 
 **Ideal for**: Regional banks, mid-size insurance companies, growing enterprises
 
-#### Tier 3: Enterprise (€350,000/year base)
+#### Tier 3: Enterprise 
 
 **Deployment Mode**: Full Governance (complete platform)
 
@@ -625,25 +625,10 @@ For production deployments where you need:
 - Audit defense package (expert testimony)
 - Private Slack channel with engineering team
 
-**Overage**: €12,000 per 10 additional systems (after first 50)
-
 **Ideal for**: Tier 1 banks, large healthcare systems, systemically important institutions
 
-### Early Adopter Program
-
-**First 10 customers get 50% off** their first year subscription.
 
 **Design Partners**: Looking for 2-3 beta customers for free pilot program.
-
-### Add-Ons (All Tiers)
-
-- **Module Add-Ons** (Starter tier only): Additional Operational Module: €10,000/year each
-- **Deployment Upgrades**: Embedded → Proxy Mode: +€25,000/year | Embedded/Proxy → Full Governance: +€50,000/year
-- **Transaction-Based**: eIDAS Seals: €0.10 per seal (volume discounts available) | High-Volume Package: €50,000/year (unlimited seals)
-- **Professional Services**: Implementation Consulting: €2,500/day | Custom Integration: €5,000 per integration | Compliance Audit Support: €10,000 per audit
-
-### Contact for Commercial Licensing
-
 
 
  **Partnership**: alchemistofconsciousness@gmail.com
