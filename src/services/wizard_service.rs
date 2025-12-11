@@ -2,10 +2,12 @@
 
 use sqlx::{PgPool, Row};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
-use chrono::{Utc, DateTime};
+use chrono::{Utc, DateTime, NaiveDateTime};
 use std::collections::HashMap;
 use rust_decimal::Decimal;
+use serde_json;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanyProfile {
@@ -38,7 +40,7 @@ pub struct CreateCompanyProfileRequest {
     pub metadata: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RecommendedModule {
     pub module_name: String,
     pub display_name: String,
@@ -49,7 +51,7 @@ pub struct RecommendedModule {
     pub requires_license: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModuleRecommendationResponse {
     pub recommended_modules: Vec<RecommendedModule>,
     pub required_count: i32,
@@ -57,7 +59,7 @@ pub struct ModuleRecommendationResponse {
     pub optional_count: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PricingBreakdown {
     pub base_price: f64,
     pub per_system_price: f64,
@@ -157,8 +159,18 @@ impl WizardService {
             estimated_ai_systems: row.get("estimated_ai_systems"),
             wizard_completed: row.get("wizard_completed"),
             wizard_completed_at: row.get("wizard_completed_at"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
+            created_at: row.try_get::<chrono::DateTime<Utc>, _>("created_at")
+                .or_else(|_| {
+                    // Fallback: if TIMESTAMP (without timezone), parse as UTC
+                    row.try_get::<chrono::NaiveDateTime, _>("created_at")
+                        .map(|dt| dt.and_utc())
+                })?,
+            updated_at: row.try_get::<chrono::DateTime<Utc>, _>("updated_at")
+                .or_else(|_| {
+                    // Fallback: if TIMESTAMP (without timezone), parse as UTC
+                    row.try_get::<chrono::NaiveDateTime, _>("updated_at")
+                        .map(|dt| dt.and_utc())
+                })?,
             metadata: row.get("metadata"),
         })
     }
@@ -193,8 +205,16 @@ impl WizardService {
                 estimated_ai_systems: row.get("estimated_ai_systems"),
                 wizard_completed: row.get("wizard_completed"),
                 wizard_completed_at: row.get("wizard_completed_at"),
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
+                created_at: row.try_get::<DateTime<Utc>, _>("created_at")
+                    .or_else(|_| {
+                        row.try_get::<NaiveDateTime, _>("created_at")
+                            .map(|dt| dt.and_utc())
+                    })?,
+                updated_at: row.try_get::<DateTime<Utc>, _>("updated_at")
+                    .or_else(|_| {
+                        row.try_get::<NaiveDateTime, _>("updated_at")
+                            .map(|dt| dt.and_utc())
+                    })?,
                 metadata: row.get("metadata"),
             }))
         } else {
@@ -221,77 +241,23 @@ impl WizardService {
     }
 
     /// Get recommended modules based on company profile
+    /// This is a simplified version that uses the new schema
     pub async fn get_recommended_modules(
         &self,
         industry: &str,
         regulatory_requirements: &[String],
         ai_use_cases: &[String],
     ) -> Result<ModuleRecommendationResponse, sqlx::Error> {
-        // Call the database function to get recommendations
-        let rows = sqlx::query!(
-            r#"
-            SELECT module_name, recommendation_reason, priority
-            FROM get_recommended_modules($1, $2, $3)
-            "#,
+        // Use the enhanced method but with default country and company_size
+        // This ensures we use the new schema with module_id
+        self.get_recommended_modules_enhanced(
             industry,
+            "", // country - not used in basic version
             regulatory_requirements,
-            ai_use_cases
+            ai_use_cases,
+            "", // company_size - not used in basic version
         )
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Get module details
-        let module_names: Vec<String> = rows.iter().map(|r| r.module_name.clone()).collect();
-        
-        let module_details = sqlx::query!(
-            r#"
-            SELECT name, display_name, description, category, requires_license
-            FROM modules
-            WHERE name = ANY($1)
-            "#,
-            &module_names
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Create a map of module details
-        let module_map: HashMap<String, _> = module_details
-            .into_iter()
-            .map(|m| (m.name.clone(), m))
-            .collect();
-
-        // Build recommended modules list
-        let mut recommended_modules = Vec::new();
-        let mut required_count = 0;
-        let mut recommended_count = 0;
-        let mut optional_count = 0;
-
-        for row in rows {
-            if let Some(details) = module_map.get(&row.module_name) {
-                match row.priority.as_str() {
-                    "REQUIRED" => required_count += 1,
-                    "RECOMMENDED" => recommended_count += 1,
-                    _ => optional_count += 1,
-                }
-
-                recommended_modules.push(RecommendedModule {
-                    module_name: row.module_name.clone(),
-                    display_name: details.display_name.clone(),
-                    description: details.description.clone(),
-                    category: details.category.clone(),
-                    recommendation_reason: row.recommendation_reason,
-                    priority: row.priority,
-                    requires_license: details.requires_license,
-                });
-            }
-        }
-
-        Ok(ModuleRecommendationResponse {
-            recommended_modules,
-            required_count,
-            recommended_count,
-            optional_count,
-        })
+        .await
     }
 
     /// Calculate pricing based on modules and number of systems
@@ -393,12 +359,31 @@ impl WizardService {
             annual_price: row.get("annual_price"),
             billing_cycle: row.get("billing_cycle"),
             auto_renew: row.get("auto_renew"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
+            created_at: row.try_get::<chrono::DateTime<Utc>, _>("created_at")
+                .or_else(|_| {
+                    // Fallback: if TIMESTAMP (without timezone), parse as UTC
+                    row.try_get::<chrono::NaiveDateTime, _>("created_at")
+                        .map(|dt| dt.and_utc())
+                })?,
+            updated_at: row.try_get::<chrono::DateTime<Utc>, _>("updated_at")
+                .or_else(|_| {
+                    // Fallback: if TIMESTAMP (without timezone), parse as UTC
+                    row.try_get::<chrono::NaiveDateTime, _>("updated_at")
+                        .map(|dt| dt.and_utc())
+                })?,
         };
 
-        // Enable selected modules for this subscription
-        for module_name in request.selected_modules {
+        // Get company profile for auto-enable logic
+        let profile = self.get_company_profile(request.company_id).await?;
+        
+        // 1. Auto-enable modules based on company profile conditions
+        if let Some(ref company_profile) = profile {
+            let auto_enabled = self.auto_enable_modules(request.company_id, company_profile).await?;
+            eprintln!("Auto-enabled {} modules based on profile conditions", auto_enabled.len());
+        }
+
+        // 2. Enable selected modules for this subscription (billing)
+        for module_name in &request.selected_modules {
             if let Ok(Some(module_id)) = sqlx::query!(
                 "SELECT id FROM modules WHERE name = $1",
                 module_name
@@ -418,6 +403,28 @@ impl WizardService {
                 .execute(&self.pool)
                 .await?;
             }
+        }
+
+        // 3. Activate selected modules for company (runtime activation)
+        // Use the same pattern as auto_enable_modules - direct SQL insert
+        for module_name in &request.selected_modules {
+            sqlx::query(
+                r#"
+                INSERT INTO company_module_configs (company_id, module_id, enabled, configured_by)
+                SELECT $1, id, true, NULL
+                FROM modules
+                WHERE name = $2
+                ON CONFLICT (company_id, module_id)
+                DO UPDATE SET
+                    enabled = true,
+                    configured_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                "#,
+            )
+            .bind(request.company_id)
+            .bind(module_name)
+            .execute(&self.pool)
+            .await?;
         }
 
         // Mark wizard as completed
@@ -461,8 +468,16 @@ impl WizardService {
                 annual_price: row.get("annual_price"),
                 billing_cycle: row.get("billing_cycle"),
                 auto_renew: row.get("auto_renew"),
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
+                created_at: row.try_get::<DateTime<Utc>, _>("created_at")
+                    .or_else(|_| {
+                        row.try_get::<NaiveDateTime, _>("created_at")
+                            .map(|dt| dt.and_utc())
+                    })?,
+                updated_at: row.try_get::<DateTime<Utc>, _>("updated_at")
+                    .or_else(|_| {
+                        row.try_get::<NaiveDateTime, _>("updated_at")
+                            .map(|dt| dt.and_utc())
+                    })?,
             }))
         } else {
             Ok(None)
@@ -538,11 +553,441 @@ impl WizardService {
             annual_price: row.get("annual_price"),
             billing_cycle: row.get("billing_cycle"),
             auto_renew: row.get("auto_renew"),
-            created_at: row.get("created_at"),
-            updated_at: row.get("updated_at"),
+            created_at: row.try_get::<chrono::DateTime<Utc>, _>("created_at")
+                .or_else(|_| {
+                    // Fallback: if TIMESTAMP (without timezone), parse as UTC
+                    row.try_get::<chrono::NaiveDateTime, _>("created_at")
+                        .map(|dt| dt.and_utc())
+                })?,
+            updated_at: row.try_get::<chrono::DateTime<Utc>, _>("updated_at")
+                .or_else(|_| {
+                    // Fallback: if TIMESTAMP (without timezone), parse as UTC
+                    row.try_get::<chrono::NaiveDateTime, _>("updated_at")
+                        .map(|dt| dt.and_utc())
+                })?,
         };
 
         Ok(subscription)
+    }
+
+    // ============================================================================
+    // NEW METHODS: Enhanced Module System
+    // ============================================================================
+
+    /// Get recommended modules with enhanced logic (uses new module_regulation_mapping)
+    pub async fn get_recommended_modules_enhanced(
+        &self,
+        industry: &str,
+        country: &str,
+        regulatory_requirements: &[String],
+        ai_use_cases: &[String],
+        company_size: &str,
+    ) -> Result<ModuleRecommendationResponse, sqlx::Error> {
+        use sqlx::Row;
+
+        // 1. Get industry-based recommendations
+        let industry_modules = sqlx::query(
+            r#"
+            SELECT m.id, m.name, m.display_name, m.description, m.category, m.requires_license,
+                   imr.priority, imr.recommendation_reason
+            FROM modules m
+            JOIN industry_module_recommendations imr ON m.id = imr.module_id
+            WHERE imr.industry = $1
+            ORDER BY 
+                CASE imr.priority
+                    WHEN 'REQUIRED' THEN 1
+                    WHEN 'RECOMMENDED' THEN 2
+                    WHEN 'OPTIONAL' THEN 3
+                END,
+                m.name
+            "#,
+        )
+        .bind(industry)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // 2. Get regulation-based requirements
+        let mut regulation_modules = Vec::new();
+        for regulation in regulatory_requirements {
+            let modules = sqlx::query(
+                r#"
+                SELECT m.id, m.name, m.display_name, m.description, m.category, m.requires_license,
+                       mrm.requirement_level as priority,
+                       'Required for ' || mrm.regulation || ' ' || COALESCE(mrm.article_number, '') as recommendation_reason
+                FROM modules m
+                JOIN module_regulation_mapping mrm ON m.id = mrm.module_id
+                WHERE mrm.regulation = $1
+                ORDER BY 
+                    CASE mrm.requirement_level
+                        WHEN 'MANDATORY' THEN 1
+                        WHEN 'RECOMMENDED' THEN 2
+                        WHEN 'OPTIONAL' THEN 3
+                    END,
+                    m.name
+                "#,
+            )
+            .bind(regulation)
+            .fetch_all(&self.pool)
+            .await?;
+            regulation_modules.extend(modules);
+        }
+
+        // 3. Get use case-based recommendations
+        let mut use_case_modules = Vec::new();
+        for use_case in ai_use_cases {
+            let modules = sqlx::query(
+                r#"
+                SELECT m.id, m.name, m.display_name, m.description, m.category, m.requires_license,
+                       ucmr.priority,
+                       ucmr.recommendation_reason
+                FROM modules m
+                JOIN use_case_module_recommendations ucmr ON m.id = ucmr.module_id
+                WHERE ucmr.use_case = $1
+                ORDER BY 
+                    CASE ucmr.priority
+                        WHEN 'REQUIRED' THEN 1
+                        WHEN 'RECOMMENDED' THEN 2
+                        WHEN 'OPTIONAL' THEN 3
+                    END,
+                    m.name
+                "#,
+            )
+            .bind(use_case)
+            .fetch_all(&self.pool)
+            .await?;
+            use_case_modules.extend(modules);
+        }
+
+        // 4. Merge and deduplicate modules (prioritize by requirement level)
+        let mut module_map: HashMap<String, RecommendedModule> = HashMap::new();
+        let mut required_count = 0;
+        let mut recommended_count = 0;
+        let mut optional_count = 0;
+
+        // Process industry modules
+        for row in industry_modules {
+            let module_name: String = row.get("name");
+            let priority: String = row.get("priority");
+            
+            if !module_map.contains_key(&module_name) {
+                match priority.as_str() {
+                    "REQUIRED" => required_count += 1,
+                    "RECOMMENDED" => recommended_count += 1,
+                    _ => optional_count += 1,
+                }
+
+                module_map.insert(module_name.clone(), RecommendedModule {
+                    module_name: module_name.clone(),
+                    display_name: row.get("display_name"),
+                    description: row.get("description"),
+                    category: row.get("category"),
+                    recommendation_reason: row.get("recommendation_reason"),
+                    priority: priority.clone(),
+                    requires_license: row.get("requires_license"),
+                });
+            }
+        }
+
+        // Process regulation modules (override with higher priority if needed)
+        for row in regulation_modules {
+            let module_name: String = row.get("name");
+            let priority: String = row.get("priority");
+            
+            if let Some(existing) = module_map.get_mut(&module_name) {
+                // Upgrade priority if regulation requirement is higher
+                if priority == "MANDATORY" && existing.priority != "REQUIRED" {
+                    if existing.priority == "RECOMMENDED" { recommended_count -= 1; }
+                    if existing.priority == "OPTIONAL" { optional_count -= 1; }
+                    required_count += 1;
+                    existing.priority = "REQUIRED".to_string();
+                }
+                existing.recommendation_reason = row.get("recommendation_reason");
+            } else {
+                match priority.as_str() {
+                    "MANDATORY" | "REQUIRED" => required_count += 1,
+                    "RECOMMENDED" => recommended_count += 1,
+                    _ => optional_count += 1,
+                }
+
+                module_map.insert(module_name.clone(), RecommendedModule {
+                    module_name: module_name.clone(),
+                    display_name: row.get("display_name"),
+                    description: row.get("description"),
+                    category: row.get("category"),
+                    recommendation_reason: row.get("recommendation_reason"),
+                    priority: if priority == "MANDATORY" { "REQUIRED".to_string() } else { priority },
+                    requires_license: row.get("requires_license"),
+                });
+            }
+        }
+
+        // Process use case modules
+        for row in use_case_modules {
+            let module_name: String = row.get("name");
+            let priority: String = row.get("priority");
+            
+            if !module_map.contains_key(&module_name) {
+                match priority.as_str() {
+                    "REQUIRED" => required_count += 1,
+                    "RECOMMENDED" => recommended_count += 1,
+                    _ => optional_count += 1,
+                }
+
+                module_map.insert(module_name.clone(), RecommendedModule {
+                    module_name: module_name.clone(),
+                    display_name: row.get("display_name"),
+                    description: row.get("description"),
+                    category: row.get("category"),
+                    recommendation_reason: row.get("recommendation_reason"),
+                    priority: priority.clone(),
+                    requires_license: row.get("requires_license"),
+                });
+            }
+        }
+
+        let recommended_modules: Vec<RecommendedModule> = module_map.into_values().collect();
+
+        Ok(ModuleRecommendationResponse {
+            recommended_modules,
+            required_count,
+            recommended_count,
+            optional_count,
+        })
+    }
+
+    /// Auto-enable modules based on company profile conditions
+    pub async fn auto_enable_modules(
+        &self,
+        company_id: Uuid,
+        profile: &CompanyProfile,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        use sqlx::Row;
+
+        // Get modules with auto-enable conditions
+        let rows = sqlx::query(
+            r#"
+            SELECT name, auto_enable_conditions
+            FROM modules
+            WHERE auto_enable_conditions IS NOT NULL
+            AND jsonb_typeof(auto_enable_conditions) = 'object'
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut to_enable = Vec::new();
+
+        for row in rows {
+            let module_name: String = row.get("name");
+            let conditions: serde_json::Value = row.get("auto_enable_conditions");
+
+            // Check if conditions match profile
+            let should_enable = if let Some(industry) = conditions.get("industry") {
+                if let Some(industry_str) = industry.as_str() {
+                    profile.industry == industry_str
+                } else {
+                    false
+                }
+            } else if let Some(country) = conditions.get("country") {
+                if let Some(country_str) = country.as_str() {
+                    profile.country == country_str
+                } else {
+                    false
+                }
+            } else if let Some(regulations) = conditions.get("regulations") {
+                if let Some(reg_array) = regulations.as_array() {
+                    reg_array.iter().any(|r| {
+                        r.as_str().map(|s| profile.regulatory_requirements.contains(&s.to_string())).unwrap_or(false)
+                    })
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if should_enable {
+                // Enable module for company
+                sqlx::query(
+                    r#"
+                    INSERT INTO company_module_configs (company_id, module_id, enabled)
+                    SELECT $1, id, true
+                    FROM modules
+                    WHERE name = $2
+                    ON CONFLICT (company_id, module_id)
+                    DO UPDATE SET enabled = true, updated_at = CURRENT_TIMESTAMP
+                    "#,
+                )
+                .bind(company_id)
+                .bind(&module_name)
+                .execute(&self.pool)
+                .await?;
+
+                to_enable.push(module_name);
+            }
+        }
+
+        Ok(to_enable)
+    }
+
+    /// Apply policy templates to a company based on their profile
+    pub async fn apply_policy_templates(
+        &self,
+        company_id: Uuid,
+        profile: &CompanyProfile,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        use sqlx::Row;
+        use uuid::Uuid as UuidType;
+
+        // Get relevant policy templates
+        let rows = sqlx::query(
+            r#"
+            SELECT pt.id, pt.name, pt.regulation, pt.policy_config, pt.template_type
+            FROM policy_templates pt
+            WHERE (pt.industry IS NULL OR pt.industry = $1)
+            AND pt.regulation = ANY($2)
+            ORDER BY 
+                CASE pt.template_type
+                    WHEN 'STRICT' THEN 1
+                    WHEN 'DEFAULT' THEN 2
+                    WHEN 'LENIENT' THEN 3
+                END
+            "#,
+        )
+        .bind(&profile.industry)
+        .bind(&profile.regulatory_requirements)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut applied_policies = Vec::new();
+
+        for row in rows {
+            let template_id: UuidType = row.get("id");
+            let policy_config: serde_json::Value = row.get("policy_config");
+            let regulation: String = row.get("regulation");
+            let template_name: String = row.get("name");
+
+            // Create policy from template
+            // Note: This assumes you have a policies table - adjust based on your schema
+            let policy_id_result = sqlx::query_scalar::<_, UuidType>(
+                r#"
+                INSERT INTO policy_versions (
+                    policy_type, policy_config, is_active, created_by, company_id
+                )
+                VALUES ($1, $2, true, NULL, $3)
+                RETURNING id
+                "#,
+            )
+            .bind(format!("{}_POLICY", regulation))
+            .bind(policy_config)
+            .bind(company_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if let Some(policy_id) = policy_id_result {
+                applied_policies.push(policy_id);
+            }
+        }
+
+        Ok(applied_policies)
+    }
+
+    /// Configure modules for a company
+    pub async fn configure_modules(
+        &self,
+        company_id: Uuid,
+        module_configs: Vec<(String, serde_json::Value)>,
+        configured_by: Option<Uuid>,
+    ) -> Result<(), sqlx::Error> {
+        for (module_name, config) in module_configs {
+            sqlx::query(
+                r#"
+                INSERT INTO company_module_configs (company_id, module_id, enabled, configuration, configured_by)
+                SELECT $1, id, true, $3, $4
+                FROM modules
+                WHERE name = $2
+                ON CONFLICT (company_id, module_id)
+                DO UPDATE SET
+                    configuration = EXCLUDED.configuration,
+                    enabled = true,
+                    configured_by = EXCLUDED.configured_by,
+                    configured_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                "#,
+            )
+            .bind(company_id)
+            .bind(&module_name)
+            .bind(config)
+            .bind(configured_by)
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Get policy templates for a regulation
+    pub async fn get_policy_templates(
+        &self,
+        regulation: Option<&str>,
+        industry: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+        use sqlx::Row;
+
+        let query = if let Some(reg) = regulation {
+            if let Some(ind) = industry {
+                sqlx::query(
+                    r#"
+                    SELECT id, name, regulation, article_number, template_type, 
+                           policy_config, description, use_cases, industry
+                    FROM policy_templates
+                    WHERE regulation = $1 AND (industry IS NULL OR industry = $2)
+                    ORDER BY template_type, name
+                    "#,
+                )
+                .bind(reg)
+                .bind(ind)
+            } else {
+                sqlx::query(
+                    r#"
+                    SELECT id, name, regulation, article_number, template_type, 
+                           policy_config, description, use_cases, industry
+                    FROM policy_templates
+                    WHERE regulation = $1
+                    ORDER BY template_type, name
+                    "#,
+                )
+                .bind(reg)
+            }
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id, name, regulation, article_number, template_type, 
+                       policy_config, description, use_cases, industry
+                FROM policy_templates
+                ORDER BY regulation, template_type, name
+                "#,
+            )
+        };
+
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let mut templates = Vec::new();
+        for row in rows {
+            templates.push(serde_json::json!({
+                "id": row.get::<uuid::Uuid, _>("id"),
+                "name": row.get::<String, _>("name"),
+                "regulation": row.get::<String, _>("regulation"),
+                "article_number": row.get::<Option<String>, _>("article_number"),
+                "template_type": row.get::<String, _>("template_type"),
+                "policy_config": row.get::<serde_json::Value, _>("policy_config"),
+                "description": row.get::<Option<String>, _>("description"),
+                "use_cases": row.get::<Option<Vec<String>>, _>("use_cases"),
+                "industry": row.get::<Option<String>, _>("industry"),
+            }));
+        }
+
+        Ok(templates)
     }
 }
 

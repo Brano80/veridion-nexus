@@ -18,18 +18,28 @@ export function useModules() {
   return useQuery<Module[]>({
     queryKey: ["modules"],
     queryFn: async () => {
+      const token = localStorage.getItem("token");
+      // If no token, return empty array (wizard doesn't need modules list)
+      if (!token) {
+        return [];
+      }
       const response = await fetch(`${API_BASE}/modules`, {
         headers: {
-          Authorization: `Bearer ${localStorage.getItem("token") || ""}`,
+          Authorization: `Bearer ${token}`,
         },
       });
       if (!response.ok) {
+        // Silently fail if unauthorized (wizard doesn't need auth)
+        if (response.status === 401) {
+          return [];
+        }
         throw new Error("Failed to fetch modules");
       }
       const data = await response.json();
       return data.modules || [];
     },
     refetchInterval: 30000, // Refetch every 30 seconds
+    retry: false, // Don't retry on auth errors
   });
 }
 

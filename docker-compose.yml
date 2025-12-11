@@ -32,6 +32,7 @@ services:
       - VERIDION_MASTER_KEY=${VERIDION_MASTER_KEY}
       - JWT_SECRET=${JWT_SECRET}
       - GEOIP_DB_PATH=/app/GeoLite2-Country.mmdb
+      - ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
     volumes:
       - ./GeoLite2-Country.mmdb:/app/GeoLite2-Country.mmdb:ro
     depends_on:

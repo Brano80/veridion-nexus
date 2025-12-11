@@ -10,6 +10,7 @@ pub mod auth;
 pub mod api_keys;
 pub mod modules;
 pub mod wizard;
+pub mod gdpr_article_12;
 
 /// Helper function to authenticate and authorize user
 async fn authenticate_and_authorize(

@@ -83,6 +83,16 @@ use routes::*;
         routes::modules::enable_module,
         routes::modules::disable_module,
         routes::modules::get_module_status,
+        routes::modules::get_modules_by_regulation,
+        routes::modules::get_module_config_schema,
+        routes::modules::get_company_module_config,
+        routes::modules::set_company_module_config,
+        routes::gdpr_article_12::list_privacy_notices,
+        routes::gdpr_article_12::create_privacy_notice,
+        routes::gdpr_article_12::get_privacy_notice,
+        routes::gdpr_article_12::update_privacy_notice,
+        routes::gdpr_article_12::publish_privacy_notice,
+        routes::gdpr_article_12::get_privacy_notice_templates,
         routes::proxy_request,
         routes::simulate_policy,
         routes::rollback_policy,
@@ -282,6 +292,8 @@ use routes::*;
         crate::services::wizard_service::ModuleRecommendationResponse,
         crate::services::wizard_service::RecommendedModule,
         crate::services::wizard_service::PricingBreakdown,
+        routes::gdpr_article_12::PrivacyNoticeResponse,
+        routes::gdpr_article_12::PrivacyNoticesListResponse,
     ))
 )]
 struct ApiDoc;
@@ -471,6 +483,16 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/modules").route(web::get().to(routes::modules::list_modules)))
                     .service(web::resource("/modules/{name}/enable").route(web::post().to(routes::modules::enable_module)))
                     .service(web::resource("/modules/{name}/disable").route(web::post().to(routes::modules::disable_module)))
+                    .service(web::resource("/modules/{name}/status").route(web::get().to(routes::modules::get_module_status)))
+                    // Enhanced Module System
+                    .service(web::resource("/modules/by-regulation/{regulation}").route(web::get().to(routes::modules::get_modules_by_regulation)))
+                    .service(web::resource("/modules/{name}/config-schema").route(web::get().to(routes::modules::get_module_config_schema)))
+                    .service(web::resource("/companies/{company_id}/modules/{module_name}/config").route(web::get().to(routes::modules::get_company_module_config)).route(web::post().to(routes::modules::set_company_module_config)))
+                    // Phase 1: GDPR Article 12 - Transparent Information
+                    .service(web::resource("/modules/gdpr-article-12/notices").route(web::get().to(routes::gdpr_article_12::list_privacy_notices)).route(web::post().to(routes::gdpr_article_12::create_privacy_notice)))
+                    .service(web::resource("/modules/gdpr-article-12/notices/{id}").route(web::get().to(routes::gdpr_article_12::get_privacy_notice)).route(web::put().to(routes::gdpr_article_12::update_privacy_notice)))
+                    .service(web::resource("/modules/gdpr-article-12/notices/{id}/publish").route(web::post().to(routes::gdpr_article_12::publish_privacy_notice)))
+                    .service(web::resource("/modules/gdpr-article-12/templates").route(web::get().to(routes::gdpr_article_12::get_privacy_notice_templates)))
                     // Priority 2: User Notification Preferences (EU AI Act Article 13)
                     .service(web::resource("/user/{user_id}/notification_preferences").route(web::post().to(routes::set_notification_preferences)).route(web::get().to(routes::get_notification_preferences)))
                     .service(web::resource("/user/{user_id}/notifications").route(web::get().to(routes::get_user_notifications)))

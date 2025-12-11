@@ -5,6 +5,7 @@ use crate::api_state::AppState;
 use crate::module_service::ModuleService;
 use crate::security::{AuthService, extract_claims, RbacService, require_permission, AuditService, Claims};
 use uuid::Uuid;
+use sqlx;
 
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct ModuleInfo {
@@ -241,6 +242,205 @@ pub async fn get_module_status(
             eprintln!("Error checking module status: {}", e);
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": "Failed to check module status"
+            }))
+        }
+    }
+}
+
+// ============================================================================
+// NEW ENDPOINTS: Enhanced Module System
+// ============================================================================
+
+/// Get modules by regulation
+#[utoipa::path(
+    get,
+    path = "/modules/by-regulation/{regulation}",
+    responses((status = 200, body = ModulesListResponse))
+)]
+pub async fn get_modules_by_regulation(
+    path: web::Path<String>,
+    http_req: HttpRequest,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "module", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let regulation = path.into_inner();
+    let module_service = ModuleService::new(data.db_pool.clone());
+    
+    match module_service.get_modules_by_regulation(&regulation).await {
+        Ok(modules) => {
+            let module_infos: Vec<ModuleInfo> = modules.into_iter().map(|module| {
+                ModuleInfo {
+                    id: module.id,
+                    name: module.name,
+                    display_name: module.display_name,
+                    description: module.description,
+                    category: module.category,
+                    enabled: false, // Check separately if needed
+                    requires_license: module.requires_license,
+                }
+            }).collect();
+
+            HttpResponse::Ok().json(ModulesListResponse {
+                modules: module_infos,
+            })
+        }
+        Err(e) => {
+            eprintln!("Error getting modules by regulation: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to get modules by regulation"
+            }))
+        }
+    }
+}
+
+/// Get module configuration schema
+#[utoipa::path(
+    get,
+    path = "/modules/{name}/config-schema",
+    responses((status = 200, body = serde_json::Value))
+)]
+pub async fn get_module_config_schema(
+    path: web::Path<String>,
+    http_req: HttpRequest,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "module", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let module_name = path.into_inner();
+    
+    // Get configuration schema from database
+    let schema: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT configuration_schema FROM modules WHERE name = $1"
+    )
+    .bind(&module_name)
+    .fetch_optional(&data.db_pool)
+    .await
+    .unwrap_or(None);
+
+    if let Some(s) = schema {
+        HttpResponse::Ok().json(s)
+    } else {
+        HttpResponse::NotFound().json(serde_json::json!({
+            "error": "Module not found or no configuration schema"
+        }))
+    }
+}
+
+/// Get company module configuration
+#[utoipa::path(
+    get,
+    path = "/companies/{company_id}/modules/{module_name}/config",
+    responses((status = 200, body = serde_json::Value))
+)]
+pub async fn get_company_module_config(
+    path: web::Path<(String, String)>,
+    http_req: HttpRequest,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "module", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let (company_id_str, module_name) = path.into_inner();
+    let company_id = match Uuid::parse_str(&company_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Invalid company ID"
+            }));
+        }
+    };
+
+    let module_service = ModuleService::new(data.db_pool.clone());
+    
+    match module_service.get_company_module_config(company_id, &module_name).await {
+        Ok(Some(config)) => {
+            HttpResponse::Ok().json(config)
+        }
+        Ok(None) => {
+            HttpResponse::Ok().json(serde_json::json!({}))
+        }
+        Err(e) => {
+            eprintln!("Error getting company module config: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to get module configuration"
+            }))
+        }
+    }
+}
+
+/// Set company module configuration
+#[utoipa::path(
+    post,
+    path = "/companies/{company_id}/modules/{module_name}/config",
+    request_body = serde_json::Value,
+    responses((status = 200, body = ModuleResponse))
+)]
+pub async fn set_company_module_config(
+    path: web::Path<(String, String)>,
+    body: web::Json<serde_json::Value>,
+    http_req: HttpRequest,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "module", "write").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let (company_id_str, module_name) = path.into_inner();
+    let company_id = match Uuid::parse_str(&company_id_str) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Invalid company ID"
+            }));
+        }
+    };
+
+    let user_id = uuid::Uuid::parse_str(&claims.sub).ok();
+    let module_service = ModuleService::new(data.db_pool.clone());
+    
+    match module_service.set_company_module_config(company_id, &module_name, body.into_inner(), user_id).await {
+        Ok(_) => {
+            // Log audit event
+            let audit_service = AuditService::new(data.db_pool.clone());
+            audit_service.log_event(
+                user_id,
+                None,
+                "module.config.updated",
+                Some("module"),
+                Some("update_config"),
+                http_req.connection_info().peer_addr().map(|s| s.to_string()).as_deref(),
+                None,
+                true,
+                None,
+                Some(serde_json::json!({ 
+                    "company_id": company_id_str,
+                    "module": module_name 
+                })),
+            ).await.ok();
+
+            HttpResponse::Ok().json(ModuleResponse {
+                status: "SUCCESS".to_string(),
+                message: format!("Module {} configuration updated", module_name),
+            })
+        }
+        Err(e) => {
+            eprintln!("Error setting company module config: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to set module configuration"
             }))
         }
     }
