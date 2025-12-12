@@ -39,6 +39,8 @@ pub struct SimulationResult {
     pub affected_agents: Vec<AgentImpact>,
     pub affected_endpoints: HashMap<String, i64>, // endpoint -> count
     pub requests_by_country: HashMap<String, i64>, // country -> count
+    pub requests_by_business_function: Option<HashMap<String, i32>>,
+    pub requests_by_location: Option<HashMap<String, i32>>,
     pub estimated_impact: ImpactLevel,
     pub critical_agents: Vec<String>, // Agents that would be 100% blocked
     pub partial_impact_agents: Vec<String>, // Agents with mixed traffic
@@ -267,6 +269,8 @@ impl PolicySimulator {
             affected_agents: agent_impacts,
             affected_endpoints: endpoint_stats,
             requests_by_country: country_stats,
+            requests_by_business_function: None,
+            requests_by_location: None,
             estimated_impact: ImpactLevel::Low, // Will be calculated later
             critical_agents,
             partial_impact_agents,
@@ -360,6 +364,8 @@ impl PolicySimulator {
             affected_agents: agent_impacts,
             affected_endpoints: endpoint_stats,
             requests_by_country: country_stats,
+            requests_by_business_function: None,
+            requests_by_location: None,
             estimated_impact: ImpactLevel::Low,
             critical_agents,
             partial_impact_agents: vec![],
@@ -382,6 +388,8 @@ impl PolicySimulator {
             affected_agents: vec![],
             affected_endpoints: HashMap::new(),
             requests_by_country: HashMap::new(),
+            requests_by_business_function: None,
+            requests_by_location: None,
             estimated_impact: ImpactLevel::Low,
             critical_agents: vec![],
             partial_impact_agents: vec![],
@@ -403,6 +411,8 @@ impl PolicySimulator {
             affected_agents: vec![],
             affected_endpoints: HashMap::new(),
             requests_by_country: HashMap::new(),
+            requests_by_business_function: None,
+            requests_by_location: None,
             estimated_impact: ImpactLevel::Low,
             critical_agents: vec![],
             partial_impact_agents: vec![],

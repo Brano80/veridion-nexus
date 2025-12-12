@@ -521,6 +521,7 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/api_keys/{id}").route(web::get().to(routes::api_keys::get_api_key)).route(web::delete().to(routes::api_keys::revoke_api_key)))
                     // Module Management
                     .service(web::resource("/modules").route(web::get().to(routes::modules::list_modules)))
+                    .service(web::resource("/my/enabled-modules").route(web::get().to(routes::modules::get_my_enabled_modules)))
                     .service(web::resource("/modules/{name}/enable").route(web::post().to(routes::modules::enable_module)))
                     .service(web::resource("/modules/{name}/disable").route(web::post().to(routes::modules::disable_module)))
                     .service(web::resource("/modules/{name}/status").route(web::get().to(routes::modules::get_module_status)))

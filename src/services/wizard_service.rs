@@ -828,28 +828,38 @@ impl WizardService {
             let conditions: serde_json::Value = row.get("auto_enable_conditions");
 
             // Check if conditions match profile
-            let should_enable = if let Some(industry) = conditions.get("industry") {
-                if let Some(industry_str) = industry.as_str() {
-                    profile.industry == industry_str
-                } else {
-                    false
+            // Support multiple condition types (industry array, regulations array, country)
+            let should_enable = {
+                let mut matches = false;
+                
+                // Check industry (supports both string and array)
+                if let Some(industry) = conditions.get("industry") {
+                    if let Some(industry_str) = industry.as_str() {
+                        matches = matches || profile.industry == industry_str;
+                    } else if let Some(industry_array) = industry.as_array() {
+                        matches = matches || industry_array.iter().any(|i| {
+                            i.as_str().map(|s| profile.industry == s).unwrap_or(false)
+                        });
+                    }
                 }
-            } else if let Some(country) = conditions.get("country") {
-                if let Some(country_str) = country.as_str() {
-                    profile.country == country_str
-                } else {
-                    false
+                
+                // Check regulations (array)
+                if let Some(regulations) = conditions.get("regulations") {
+                    if let Some(reg_array) = regulations.as_array() {
+                        matches = matches || reg_array.iter().any(|r| {
+                            r.as_str().map(|s| profile.regulatory_requirements.contains(&s.to_string())).unwrap_or(false)
+                        });
+                    }
                 }
-            } else if let Some(regulations) = conditions.get("regulations") {
-                if let Some(reg_array) = regulations.as_array() {
-                    reg_array.iter().any(|r| {
-                        r.as_str().map(|s| profile.regulatory_requirements.contains(&s.to_string())).unwrap_or(false)
-                    })
-                } else {
-                    false
+                
+                // Check country (string)
+                if let Some(country) = conditions.get("country") {
+                    if let Some(country_str) = country.as_str() {
+                        matches = matches || profile.country == country_str;
+                    }
                 }
-            } else {
-                false
+                
+                matches
             };
 
             if should_enable {

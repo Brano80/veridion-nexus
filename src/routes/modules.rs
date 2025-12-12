@@ -446,3 +446,97 @@ pub async fn set_company_module_config(
     }
 }
 
+/// Get enabled modules for current user's company
+#[utoipa::path(
+    get,
+    path = "/my/enabled-modules",
+    responses((status = 200, body = ModulesListResponse))
+)]
+pub async fn get_my_enabled_modules(
+    http_req: HttpRequest,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    // AUTHENTICATION & AUTHORIZATION
+    let claims = match authenticate_and_authorize(&http_req, &data.db_pool, "module", "read").await {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+
+    let user_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "Invalid user ID in token"
+            }));
+        }
+    };
+
+    // Get company_id from user's subscription or company_profiles
+    // First, try to get from active subscription (most recent)
+    let company_id: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT company_id 
+        FROM subscriptions 
+        WHERE status IN ('TRIAL', 'ACTIVE')
+        ORDER BY created_at DESC
+        LIMIT 1
+        "#
+    )
+    .fetch_optional(&data.db_pool)
+    .await
+    .unwrap_or(None);
+
+    // If no subscription, try to get from company_profiles (created_by)
+    let company_id = if company_id.is_none() {
+        sqlx::query_scalar(
+            r#"
+            SELECT id 
+            FROM company_profiles 
+            WHERE created_by = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#
+        )
+        .bind(user_id)
+        .fetch_optional(&data.db_pool)
+        .await
+        .unwrap_or(None)
+    } else {
+        company_id
+    };
+
+    if company_id.is_none() {
+        return HttpResponse::Ok().json(ModulesListResponse {
+            modules: vec![],
+        });
+    }
+
+    let module_service = ModuleService::new(data.db_pool.clone());
+    
+    match module_service.get_company_enabled_modules(company_id.unwrap()).await {
+        Ok(modules) => {
+            let module_infos: Vec<ModuleInfo> = modules.into_iter().map(|module| {
+                ModuleInfo {
+                    id: module.id,
+                    name: module.name,
+                    display_name: module.display_name,
+                    description: module.description,
+                    category: module.category,
+                    enabled: true, // All returned modules are enabled
+                    requires_license: module.requires_license,
+                }
+            }).collect();
+
+            HttpResponse::Ok().json(ModulesListResponse {
+                modules: module_infos,
+            })
+        }
+        Err(e) => {
+            eprintln!("Error getting enabled modules: {}", e);
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": "Failed to get enabled modules"
+            }))
+        }
+    }
+}
+

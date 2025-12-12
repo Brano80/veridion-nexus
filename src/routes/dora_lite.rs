@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use sqlx::FromRow;
 use crate::api_state::AppState;
-use crate::security::{authenticate_and_authorize, Claims};
+use crate::security::{AuthService, extract_claims, RbacService, require_permission, Claims};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -66,10 +66,20 @@ pub async fn create_dora_lite_incident(
     data: web::Data<AppState>,
     http_req: HttpRequest,
 ) -> impl Responder {
-    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "dora_lite", "write").await {
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })),
+    };
+    let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let rbac = RbacService::new(data.db_pool.clone());
+    if let Err(resp) = require_permission(&http_req, &rbac, &claims, "dora_lite", "write").await {
+        return resp;
+    }
 
     #[derive(FromRow)]
     struct IncidentRow {
@@ -159,10 +169,20 @@ pub async fn get_dora_lite_incidents(
     data: web::Data<AppState>,
     http_req: HttpRequest,
 ) -> impl Responder {
-    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "dora_lite", "read").await {
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })),
+    };
+    let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let rbac = RbacService::new(data.db_pool.clone());
+    if let Err(resp) = require_permission(&http_req, &rbac, &claims, "dora_lite", "read").await {
+        return resp;
+    }
 
     let status_filter = query.get("status");
     let severity_filter = query.get("severity");
@@ -301,10 +321,20 @@ pub async fn create_dora_lite_vendor(
     data: web::Data<AppState>,
     http_req: HttpRequest,
 ) -> impl Responder {
-    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "dora_lite", "write").await {
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })),
+    };
+    let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let rbac = RbacService::new(data.db_pool.clone());
+    if let Err(resp) = require_permission(&http_req, &rbac, &claims, "dora_lite", "write").await {
+        return resp;
+    }
 
     let sla_uptime = body.sla_uptime_percentage.map(|v| rust_decimal::Decimal::from_f64_retain(v).unwrap_or(rust_decimal::Decimal::ZERO));
 
@@ -404,10 +434,20 @@ pub async fn get_dora_lite_vendors(
     data: web::Data<AppState>,
     http_req: HttpRequest,
 ) -> impl Responder {
-    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "dora_lite", "read").await {
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })),
+    };
+    let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let rbac = RbacService::new(data.db_pool.clone());
+    if let Err(resp) = require_permission(&http_req, &rbac, &claims, "dora_lite", "read").await {
+        return resp;
+    }
 
     let vendor_type_filter = query.get("vendor_type");
     let risk_level_filter = query.get("risk_level");
@@ -524,10 +564,20 @@ pub async fn create_dora_lite_sla_monitoring(
     data: web::Data<AppState>,
     http_req: HttpRequest,
 ) -> impl Responder {
-    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "dora_lite", "write").await {
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })),
+    };
+    let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let rbac = RbacService::new(data.db_pool.clone());
+    if let Err(resp) = require_permission(&http_req, &rbac, &claims, "dora_lite", "write").await {
+        return resp;
+    }
 
     let sla_target = rust_decimal::Decimal::from_f64_retain(body.sla_target_uptime)
         .unwrap_or(rust_decimal::Decimal::ZERO);
@@ -616,10 +666,20 @@ pub async fn get_dora_lite_sla_monitoring(
     data: web::Data<AppState>,
     http_req: HttpRequest,
 ) -> impl Responder {
-    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "dora_lite", "read").await {
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })),
+    };
+    let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let rbac = RbacService::new(data.db_pool.clone());
+    if let Err(resp) = require_permission(&http_req, &rbac, &claims, "dora_lite", "read").await {
+        return resp;
+    }
 
     #[derive(FromRow)]
     struct SLARow {
@@ -710,10 +770,20 @@ pub async fn get_dora_lite_compliance_status(
     data: web::Data<AppState>,
     http_req: HttpRequest,
 ) -> impl Responder {
-    let _claims = match authenticate_and_authorize(&http_req, &data.db_pool, "dora_lite", "read").await {
+    let auth_service = match AuthService::new() {
+        Ok(service) => service,
+        Err(e) => return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Failed to initialize auth service: {}", e)
+        })),
+    };
+    let claims = match extract_claims(&http_req, &auth_service) {
         Ok(c) => c,
         Err(resp) => return resp,
     };
+    let rbac = RbacService::new(data.db_pool.clone());
+    if let Err(resp) = require_permission(&http_req, &rbac, &claims, "dora_lite", "read").await {
+        return resp;
+    }
 
     // Get vendor count
     let vendor_count: i64 = sqlx::query_scalar(

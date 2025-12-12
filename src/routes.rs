@@ -54,7 +54,7 @@ use utoipa::ToSchema;
 use actix_web::http::header::ContentDisposition;
 use std::fs;
 use std::collections::HashMap;
-use chrono::{Local, Utc, DateTime};
+use chrono::{Local, Utc, DateTime, Datelike};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -8523,7 +8523,7 @@ pub async fn export_shadow_mode_logs(
     let start_time = end_time - chrono::Duration::days(days);
 
     // Fetch shadow mode logs
-    #[derive(sqlx::FromRow)]
+    #[derive(sqlx::FromRow, Debug)]
     struct ShadowLogRow {
         id: uuid::Uuid,
         agent_id: String,

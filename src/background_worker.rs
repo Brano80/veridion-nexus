@@ -486,12 +486,13 @@ impl BackgroundWorker {
                                 // Send rollback notification
                                 let notification_service = crate::integration::notifications::NotificationService::new();
                                 let policy_id_str = policy.policy_version_id.to_string();
+                                let policy_type_clone = policy.policy_type.clone();
                                 let db_pool_clone = self.db_pool.clone();
                                 tokio::spawn(async move {
                                     let _ = notification_service.send_canary_rollback_alert(
                                         &db_pool_clone,
                                         &policy_id_str,
-                                        &policy.policy_type,
+                                        &policy_type_clone,
                                         policy.rollout_percentage,
                                         prev_percentage,
                                         rate,

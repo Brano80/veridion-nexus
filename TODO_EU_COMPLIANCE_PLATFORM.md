@@ -43,7 +43,7 @@
 - ✅ **Human Oversight** - EU AI Act Article 14 - **IMPLEMENTED**
 - ✅ **Risk Assessment** - EU AI Act Article 9 - **IMPLEMENTED**
 - ✅ **Breach Management** - GDPR Articles 33-34 - **IMPLEMENTED**
-- ⚠️ **DORA Lite Compliance** - **NEW** - Simplified DORA compliance for Startups/SMEs (principle of proportionality)
+- ✅ **DORA Lite Compliance** - **COMPLETED** - Simplified DORA compliance for Startups/SMEs (principle of proportionality) - Full implementation with dashboard, auto-enable, and all Article 9-11 features
 
 ### Core Platform Features
 - ✅ **Sovereign Lock** - Data sovereignty enforcement
@@ -259,7 +259,7 @@
 ---
 
 ### 1.8 DORA Lite Compliance (Startups/SMEs)
-**Status:** ⚠️ **MUST IMPLEMENT** - Critical for Fintech/Insurtech/Crypto startups  
+**Status:** ✅ **COMPLETED** - Fully implemented and integrated  
 **Goal:** Simplified DORA compliance following principle of proportionality
 
 **⚠️ IMPORTANT:** DORA Article 2 applies to 20 types of financial entities, NOT just banks:
@@ -277,30 +277,42 @@
   - Lighter rules than banks, no expensive "Red Teaming" tests
   - Simplified reporting requirements
 
-**Čo treba implementovať pre Fázu 1:**
-- [ ] **DORA Lite Module** - Simplified DORA compliance for Startups/SMEs
-- [ ] **Incident Log** - Simple incident logging (mandatory for all DORA entities)
-- [ ] **Basic Risk Assessment** - Vendor list (who is my cloud? who is my AI provider?)
-- [ ] **SLA Monitoring** - "Do we have 99.9% uptime guarantee?"
-- [ ] **Simplified ICT Risk Management Framework** - Basic risk management (not full enterprise framework)
-- [ ] **Wizard Integration** - Detect if company is Fintech/Crypto/Insurtech → Enable DORA Lite automatically
-- [ ] **DORA Lite vs Enterprise Toggle** - Wizard should distinguish between:
-  - **DORA Lite** (Fáza 1): For Startups/SMEs - Simplified requirements
-  - **DORA Enterprise** (Fáza 2): For Banks - Full TLPT, Red Teaming, etc.
+**Čo je dokončené:**
+- [x] ✅ **DORA Lite Module** - Registered in modules table with auto-enable conditions (migration 043)
+- [x] ✅ **Incident Log** - Full incident logging API and dashboard (Article 10 simplified)
+- [x] ✅ **Vendor List** - Vendor management API and dashboard (Article 9 simplified - basic list, not full register)
+- [x] ✅ **SLA Monitoring** - SLA tracking API and dashboard (Article 11 simplified - basic monitoring, no full resilience testing)
+- [x] ✅ **Compliance Status Dashboard** - Real-time compliance score with Article 9/10/11 status
+- [x] ✅ **Wizard Integration** - Auto-enables DORA Lite for Fintech/Crypto/Insurtech companies
+- [x] ✅ **Frontend Dashboard** - Complete React dashboard at `/dora-lite` with tabs for Overview, Incidents, Vendors, SLA Monitoring
+- [x] ✅ **Sidebar Navigation** - Added to core navigation (module-gated)
+- [x] ✅ **Auto-Enable Logic** - Enhanced wizard service to handle industry arrays and regulation arrays
 
 **Implementation Details:**
-- Wizard should detect industry: If `FINANCIAL_SERVICES`, `INSURANCE`, or regulatory_requirements includes `DORA` → Enable DORA Lite
-- DORA Lite module should include:
-  - Basic incident logging (Article 10 simplified)
-  - Vendor risk list (Article 9 simplified - just list, not full register)
-  - Basic SLA monitoring (Article 11 simplified - no full resilience testing)
-- Do NOT include: TLPT reporting, Red Teaming, Complex audit trails, Dedicated crisis manager
+- ✅ Database migration: `043_register_dora_lite_module.sql` registers module with auto-enable conditions
+- ✅ Auto-enable conditions: `{"regulations": ["DORA"], "industry": ["FINANCIAL_SERVICES", "INSURANCE", "CRYPTO"]}`
+- ✅ Backend API: All endpoints implemented in `src/routes/dora_lite.rs`:
+  - `POST /dora-lite/incidents` - Create incident
+  - `GET /dora-lite/incidents` - List incidents
+  - `POST /dora-lite/vendors` - Create vendor
+  - `GET /dora-lite/vendors` - List vendors
+  - `POST /dora-lite/sla-monitoring` - Create SLA monitoring
+  - `GET /dora-lite/sla-monitoring` - List SLA monitoring
+  - `GET /dora-lite/compliance-status` - Get compliance status
+- ✅ Frontend dashboard: `dashboard/app/dora-lite/page.tsx` with 4 tabs:
+  - Overview: Compliance score, Article 9/10/11 status, recommendations
+  - Incidents: List with severity, status, impact, mitigation
+  - Vendors: Vendor cards with risk levels, SLA info
+  - SLA Monitoring: SLA status, uptime tracking, incident counts
+- ✅ Wizard auto-enable: Updated `wizard_service.rs` to handle industry arrays and regulation arrays
+- ✅ Sidebar: Added "DORA Lite" link to `DashboardLayout.tsx` (module-gated)
+- ✅ Does NOT include: TLPT reporting, Red Teaming, Complex audit trails, Dedicated crisis manager (Enterprise only)
 
 **Strategic Value:** 
 - **CRITICAL** - Fintech/Insurtech/Crypto startups in Fáza 1 ARE in scope of DORA
 - Cannot completely ignore DORA for these segments (would violate law)
 - Cannot give them full Enterprise DORA (would overwhelm them with bureaucracy they don't need)
-- Solution: DORA Lite = Proportional compliance for Startups/SMEs
+- Solution: DORA Lite = Proportional compliance for Startups/SMEs ✅ **IMPLEMENTED**
 
 ---
 
@@ -676,7 +688,7 @@
 
 ### Medium-term (Week 5-8)
 1. **Complete Veridion TPRM Integration** - Full API integration
-2. **Build DORA Lite Module** - For Startups/SMEs (Fáza 1) - Simplified compliance
+2. ✅ **Build DORA Lite Module** - **COMPLETED** - For Startups/SMEs (Fáza 1) - Simplified compliance
 3. **Build DORA Enterprise Compliance Reports** - Article 9, 10, 11 (Fáza 2) - Full compliance for Banks
 4. **Build NIS2 Compliance Reports** - Article 20, 21, 23
 5. **Build Executive Dashboard** - Board-ready interface
@@ -694,4 +706,4 @@
 
 **Last Updated:** 2024-12-19  
 **Last Verified:** 2024-12-19  
-**Status:** ✅ **Fáza 1 je 100% dokončená** - Všetky export funkcie implementované (export_shadow_mode_logs, export_simulation_report, export_monthly_compliance_summary)
+**Status:** ✅ **Fáza 1 je 100% dokončená** - Všetky export funkcie implementované (export_shadow_mode_logs, export_simulation_report, export_monthly_compliance_summary) + DORA Lite plne implementovaný (dashboard, auto-enable, všetky API endpointy)

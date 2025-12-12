@@ -119,9 +119,9 @@ export default function LandingPage() {
 
       {/* Developer Button - Floating */}
       <Link
-        href="/dashboard"
+        href="/dashboard?developer=true"
         className="fixed bottom-6 right-6 flex items-center gap-2 px-4 py-2 bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 hover:text-white border border-slate-700 rounded-lg transition-all duration-200 shadow-lg backdrop-blur-sm text-sm font-medium z-50"
-        title="Developer Access"
+        title="Developer Access - Show all modules and features"
       >
         <Code size={16} />
         <span>Developer</span>

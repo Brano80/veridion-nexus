@@ -40,13 +40,16 @@ import {
   FileCheck,
   Scale,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useModules } from "../hooks/useModules";
+import { useEnabledModules } from "../hooks/useEnabledModules";
 
 // Core Compliance Hub navigation (always visible)
 const coreNavigation = [
+  { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard, module: null },
   { name: "Setup Wizard", href: "/wizard", icon: Sparkles, module: null },
-  { name: "Compliance Overview", href: "/compliance-overview", icon: LayoutDashboard, module: null },
+  { name: "Compliance Overview", href: "/compliance-overview", icon: FileText, module: null },
+  { name: "DORA Lite", href: "/dora-lite", icon: FileCheck, module: "module_dora_lite" },
   { name: "Runtime Logs", href: "/runtime-logs", icon: ScrollText, module: null },
   { name: "Human Oversight", href: "/human-oversight", icon: Eye, module: "module_human_oversight" },
   { name: "Data Shredding", href: "/data-subjects", icon: Trash2, module: "module_data_subject_rights" },
@@ -100,11 +103,56 @@ export default function DashboardLayout({
 }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const { data: modules = [], isLoading: modulesLoading } = useModules();
+  const { data: enabledModules = [], isLoading: enabledModulesLoading } = useEnabledModules();
+  
+  // Developer mode - show all modules for demo purposes
+  // Check for developer mode in localStorage or URL parameter
+  const [developerMode, setDeveloperMode] = useState(false);
+  
+  useEffect(() => {
+    // Check localStorage for developer mode
+    const devMode = localStorage.getItem("developer_mode") === "true";
+    setDeveloperMode(devMode);
+    
+    // Also check URL parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get("developer") === "true") {
+      setDeveloperMode(true);
+      localStorage.setItem("developer_mode", "true");
+    }
+  }, []);
 
-  // DEMO MODE: Show all modules regardless of enabled status
-  // For demo purposes, we want to display all available modules
-  const enabledPlugins = pluginNavigation; // Show all modules in demo mode
+  // Filter navigation items based on enabled modules
+  // In developer mode, show ALL modules for demo purposes
+  const enabledPlugins = developerMode 
+    ? pluginNavigation // Show all in developer mode
+    : pluginNavigation.filter((item) => {
+        if (!item.module) return true; // Always show items without module requirement
+        return enabledModules.some((m) => m.name === item.module && m.enabled);
+      });
+
+  // Filter core navigation items that have module requirements
+  const filteredCoreNavigation = developerMode
+    ? coreNavigation // Show all in developer mode
+    : coreNavigation.filter((item) => {
+        if (!item.module) return true; // Always show items without module requirement
+        return enabledModules.some((m) => m.name === item.module && m.enabled);
+      });
+
+  // Filter enterprise navigation
+  // In developer mode, show ALL enterprise features for demo
+  // Otherwise, hide ALL enterprise features for startups (Fáza 1)
+  const filteredEnterpriseNavigation = developerMode
+    ? enterpriseNavigation // Show all in developer mode
+    : enterpriseNavigation.filter((item) => {
+        // Enterprise features without module requirement should NOT be shown
+        // These are Fáza 2 features and should be hidden for startups
+        if (!item.module) {
+          return false;
+        }
+        // Only show if module is explicitly enabled
+        return enabledModules.some((m) => m.name === item.module && m.enabled);
+      });
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
@@ -125,12 +173,21 @@ export default function DashboardLayout({
         } lg:translate-x-0`}
       >
         <div className="p-6 border-b border-slate-800">
-          <h1 className="text-2xl font-bold text-emerald-400 tracking-wider">
-            VERIDION NEXUS
-          </h1>
-          <p className="text-xs text-slate-500 mt-1">
-            Compliance Dashboard v1.0.0
-          </p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-emerald-400 tracking-wider">
+                VERIDION NEXUS
+              </h1>
+              <p className="text-xs text-slate-500 mt-1">
+                Compliance Dashboard v1.0.0
+              </p>
+            </div>
+            {developerMode && (
+              <div className="px-2 py-1 bg-yellow-900/30 border border-yellow-800 rounded text-xs font-medium text-yellow-400">
+                DEV MODE
+              </div>
+            )}
+          </div>
         </div>
 
         <nav className="p-4 space-y-1 overflow-y-auto h-[calc(100vh-120px)]">
@@ -139,7 +196,7 @@ export default function DashboardLayout({
             <div className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">
               Compliance Hub
             </div>
-            {coreNavigation.map((item) => {
+            {filteredCoreNavigation.map((item) => {
               const isActive = pathname === item.href;
               const Icon = item.icon;
               return (
@@ -188,13 +245,13 @@ export default function DashboardLayout({
             </div>
           )}
 
-          {/* Enterprise Features (Fáza 2) */}
-          {enterpriseNavigation.length > 0 && (
+          {/* Enterprise Features (Fáza 2) - Only show if enabled */}
+          {filteredEnterpriseNavigation.length > 0 && (
             <div className="mt-6">
               <div className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                 Enterprise Features
               </div>
-              {enterpriseNavigation.map((item) => {
+              {filteredEnterpriseNavigation.map((item) => {
                 const isActive = pathname === item.href;
                 const Icon = item.icon;
                 return (
