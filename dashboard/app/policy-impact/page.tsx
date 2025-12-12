@@ -1,9 +1,10 @@
 "use client";
 
 import DashboardLayout from "../components/DashboardLayout";
+import ImpactNetworkGraph from "../components/ImpactNetworkGraph";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { AlertTriangle, TrendingUp, Users, Globe, Activity, Play, RotateCcw, TestTube } from "lucide-react";
+import { AlertTriangle, TrendingUp, Users, Globe, Activity, Play, RotateCcw, TestTube, Network, Gauge, Zap } from "lucide-react";
 import { useState } from "react";
 import { getAuthHeaders } from "../utils/auth";
 
@@ -121,6 +122,12 @@ export default function PolicyImpactPage() {
   const [simulationResult, setSimulationResult] = useState<SimulationResult | null>(null);
   const [costImpact, setCostImpact] = useState<CostImpact | null>(null);
   const [blastRadius, setBlastRadius] = useState<Record<string, BlastRadiusEntry>>({});
+  const [businessImpact, setBusinessImpact] = useState<any>(null);
+  const [confidenceScore, setConfidenceScore] = useState<number | null>(null);
+  const [confidenceBreakdown, setConfidenceBreakdown] = useState<any>(null);
+  const [historicalAnalysis, setHistoricalAnalysis] = useState<any>(null);
+  const [visualization, setVisualization] = useState<any>(null);
+  const [summary, setSummary] = useState<any>(null);
   const [isSimulating, setIsSimulating] = useState(false);
   const [simulationConfig, setSimulationConfig] = useState({
     blocked_countries: ["US", "CN", "RU"],
@@ -159,6 +166,12 @@ export default function PolicyImpactPage() {
       setSimulationResult(data.simulation_result);
       setCostImpact(data.cost_impact);
       setBlastRadius(data.blast_radius || {});
+      setBusinessImpact(data.business_impact);
+      setConfidenceScore(data.confidence_score);
+      setConfidenceBreakdown(data.confidence_breakdown);
+      setHistoricalAnalysis(data.historical_analysis);
+      setVisualization(data.visualization);
+      setSummary(data.summary);
     } catch (error: any) {
       alert(`Simulation failed: ${error.message}`);
     } finally {
@@ -408,6 +421,124 @@ export default function PolicyImpactPage() {
                   ))}
               </div>
             </div>
+
+            {/* Network Graph Visualization */}
+            {simulationResult.affected_agents.length > 0 && (
+              <div className="mt-6">
+                <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                  <Network className="text-emerald-400" size={18} />
+                  Impact Network Graph
+                </h3>
+                <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-700">
+                  <ImpactNetworkGraph
+                    agents={simulationResult.affected_agents}
+                    countries={simulationResult.requests_by_country}
+                    endpoints={simulationResult.affected_endpoints}
+                    width={800}
+                    height={500}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Enhanced Cost Impact Metrics */}
+            {costImpact && (
+              <div className="mt-6 bg-slate-800/50 border border-slate-700 rounded-lg p-6">
+                <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                  <Gauge className="text-emerald-400" size={18} />
+                  Cost Impact Metrics
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Latency Metrics */}
+                  <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-700">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Zap className="text-yellow-400" size={16} />
+                      <span className="font-semibold text-slate-200">Latency Impact</span>
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Average Latency</div>
+                        <div className="text-2xl font-bold text-yellow-400">
+                          {costImpact.average_latency_ms.toFixed(1)} ms
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Cost per Request</div>
+                        <div className="text-lg font-semibold text-slate-300">
+                          ${costImpact.cost_per_ms_per_request.toFixed(6)} per ms/request
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Estimated Latency Cost</div>
+                        <div className="text-xl font-bold text-red-400">
+                          ${costImpact.estimated_latency_cost_usd.toLocaleString(undefined, { 
+                            minimumFractionDigits: 2, 
+                            maximumFractionDigits: 2 
+                          })}
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1">
+                          Based on {simulationResult.would_block.toLocaleString()} blocked requests
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Throughput Metrics */}
+                  <div className="bg-slate-900/50 rounded-lg p-4 border border-slate-700">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Activity className="text-blue-400" size={16} />
+                      <span className="font-semibold text-slate-200">Throughput Impact</span>
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Blocked Requests per Second</div>
+                        <div className="text-2xl font-bold text-blue-400">
+                          {costImpact.estimated_blocked_rps.toFixed(2)} RPS
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Cost per RPS</div>
+                        <div className="text-lg font-semibold text-slate-300">
+                          ${costImpact.cost_per_rps.toFixed(2)} per RPS
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1">Estimated Throughput Cost</div>
+                        <div className="text-xl font-bold text-red-400">
+                          ${costImpact.estimated_throughput_cost_usd.toLocaleString(undefined, { 
+                            minimumFractionDigits: 2, 
+                            maximumFractionDigits: 2 
+                          })}
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1">
+                          Over {timeRange === "7d" ? 7 : timeRange === "30d" ? 30 : 90} days
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Total Cost Summary */}
+                <div className="mt-4 pt-4 border-t border-slate-700">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm text-slate-400 mb-1">Total Estimated Cost Impact</div>
+                      <div className="text-3xl font-bold text-red-400">
+                        ${costImpact.estimated_total_cost_usd.toLocaleString(undefined, { 
+                          minimumFractionDigits: 2, 
+                          maximumFractionDigits: 2 
+                        })}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs text-slate-500 italic max-w-xs">
+                        {costImpact.note}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

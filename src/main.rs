@@ -95,10 +95,15 @@ use routes::*;
         routes::gdpr_article_12::get_privacy_notice_templates,
         routes::proxy_request,
         routes::simulate_policy,
+        routes::export_simulation_report,
         routes::rollback_policy,
         routes::get_policy_impact_analytics,
         routes::get_shadow_mode_analytics,
+        routes::export_shadow_mode_logs,
         routes::get_circuit_breaker_analytics,
+        routes::get_circuit_breaker_history,
+        routes::control_circuit_breaker,
+        routes::get_circuit_breaker_metrics,
         routes::get_canary_analytics,
         routes::get_tprm_compliance_report,
         routes::get_dora_compliance_report,
@@ -132,6 +137,8 @@ use routes::*;
         routes::auto_generate_tprm_policies,
         routes::get_executive_assurance,
         routes::get_compliance_kpis,
+        routes::get_monthly_compliance_summary,
+        routes::export_monthly_compliance_summary,
         routes::get_decision_explanation,
         routes::get_feature_importance,
         routes::get_model_drift,
@@ -148,6 +155,13 @@ use routes::*;
         routes::wizard::start_trial,
         routes::wizard::get_subscription,
         routes::wizard::upgrade_subscription,
+        routes::dora_lite::create_dora_lite_incident,
+        routes::dora_lite::get_dora_lite_incidents,
+        routes::dora_lite::create_dora_lite_vendor,
+        routes::dora_lite::get_dora_lite_vendors,
+        routes::dora_lite::create_dora_lite_sla_monitoring,
+        routes::dora_lite::get_dora_lite_sla_monitoring,
+        routes::dora_lite::get_dora_lite_compliance_status,
     ),
     components(schemas(
         routes::LogRequest,
@@ -260,6 +274,12 @@ use routes::*;
         routes::SetEnforcementModeRequest,
         routes::CircuitBreakerConfigRequest,
         routes::CircuitBreakerConfigResponse,
+        routes::CircuitBreakerHistoryResponse,
+        routes::CircuitBreakerControlRequest,
+        routes::CircuitBreakerControlResponse,
+        routes::CircuitBreakerMetrics,
+        routes::ErrorRateDataPoint,
+        routes::RecoveryTimeData,
         routes::CanaryConfigRequest,
         routes::CanaryConfigResponse,
         routes::PolicyHealthResponse,
@@ -289,6 +309,14 @@ use routes::*;
         routes::wizard::CalculatePriceRequest,
         routes::wizard::SubscriptionResponse,
         routes::wizard::UpgradeRequest,
+        routes::dora_lite::DORALiteIncident,
+        routes::dora_lite::CreateDORALiteIncidentRequest,
+        routes::dora_lite::DORALiteIncidentList,
+        routes::dora_lite::DORALiteVendor,
+        routes::dora_lite::CreateDORALiteVendorRequest,
+        routes::dora_lite::DORALiteSLAMonitoring,
+        routes::dora_lite::CreateDORALiteSLARequest,
+        routes::dora_lite::DORALiteComplianceStatus,
         crate::services::wizard_service::ModuleRecommendationResponse,
         crate::services::wizard_service::RecommendedModule,
         crate::services::wizard_service::PricingBreakdown,
@@ -351,6 +379,18 @@ async fn main() -> std::io::Result<()> {
     let worker3 = background_worker::BackgroundWorker::new(db_pool_for_views);
     tokio::spawn(async move {
         worker3.refresh_materialized_views().await;
+    });
+    
+    let db_pool_for_circuit_breaker = app_state.db_pool.clone();
+    let worker4 = background_worker::BackgroundWorker::new(db_pool_for_circuit_breaker);
+    tokio::spawn(async move {
+        worker4.process_circuit_breaker_recovery().await;
+    });
+    
+    let db_pool_for_canary = app_state.db_pool.clone();
+    let worker5 = background_worker::BackgroundWorker::new(db_pool_for_canary);
+    tokio::spawn(async move {
+        worker5.process_canary_deployment().await;
     });
 
     // Initialize security services
@@ -515,10 +555,16 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/wizard/start-trial").route(web::post().to(routes::wizard::start_trial)))
                     .service(web::resource("/wizard/subscription/{company_id}").route(web::get().to(routes::wizard::get_subscription)))
                     .service(web::resource("/wizard/upgrade").route(web::post().to(routes::wizard::upgrade_subscription)))
+                    // DORA Lite - Simplified DORA compliance for Startups/SMEs (Fáza 1)
+                    .service(web::resource("/dora-lite/incidents").route(web::post().to(routes::dora_lite::create_dora_lite_incident)).route(web::get().to(routes::dora_lite::get_dora_lite_incidents)))
+                    .service(web::resource("/dora-lite/vendors").route(web::post().to(routes::dora_lite::create_dora_lite_vendor)).route(web::get().to(routes::dora_lite::get_dora_lite_vendors)))
+                    .service(web::resource("/dora-lite/sla-monitoring").route(web::post().to(routes::dora_lite::create_dora_lite_sla_monitoring)).route(web::get().to(routes::dora_lite::get_dora_lite_sla_monitoring)))
+                    .service(web::resource("/dora-lite/compliance-status").route(web::get().to(routes::dora_lite::get_dora_lite_compliance_status)))
                     // Proxy Mode - Network-level compliance enforcement
                     .service(web::resource("/proxy").route(web::post().to(routes::proxy_request)))
                     // Policy Management - Operational Safety
                     .service(web::resource("/policies/simulate").route(web::post().to(routes::simulate_policy)))
+                    .service(web::resource("/policies/simulate/export").route(web::post().to(routes::export_simulation_report)))
                     .service(web::resource("/policies/preview-impact").route(web::get().to(routes::preview_policy_impact)))
                     .service(web::resource("/policies/compare").route(web::post().to(routes::compare_policies)))
                     .service(web::resource("/policies/{policy_id}/rollback").route(web::post().to(routes::rollback_policy)))
@@ -527,8 +573,13 @@ async fn main() -> std::io::Result<()> {
                     .service(web::resource("/policies/{policy_id}/reject").route(web::post().to(routes::reject_policy)))
                     .service(web::resource("/analytics/policy-impact").route(web::get().to(routes::get_policy_impact_analytics)))
                     .service(web::resource("/analytics/shadow-mode").route(web::get().to(routes::get_shadow_mode_analytics)))
+                    .service(web::resource("/analytics/shadow-mode/export").route(web::get().to(routes::export_shadow_mode_logs)))
                     .service(web::resource("/analytics/circuit-breaker").route(web::get().to(routes::get_circuit_breaker_analytics)))
+                    .service(web::resource("/policies/{policy_id}/circuit-breaker/history").route(web::get().to(routes::get_circuit_breaker_history)))
+                    .service(web::resource("/policies/{policy_id}/circuit-breaker/control").route(web::post().to(routes::control_circuit_breaker)))
+                    .service(web::resource("/policies/{policy_id}/circuit-breaker/metrics").route(web::get().to(routes::get_circuit_breaker_metrics)))
                     .service(web::resource("/analytics/canary").route(web::get().to(routes::get_canary_analytics)))
+                    .service(web::resource("/policies/{policy_id}/canary/history").route(web::get().to(routes::get_canary_history)))
                     .service(web::resource("/analytics/vendor-risk").route(web::get().to(routes::get_vendor_risk_dashboard)))
                     .service(web::resource("/analytics/business-functions").route(web::get().to(routes::get_business_function_dashboard)))
                     .service(web::resource("/analytics/policy-health").route(web::get().to(routes::get_policy_health_dashboard)))
@@ -545,6 +596,9 @@ async fn main() -> std::io::Result<()> {
                     // Executive Assurance Reporting
                     .service(web::resource("/reports/executive-assurance").route(web::get().to(routes::get_executive_assurance)))
                     .service(web::resource("/reports/compliance-kpis").route(web::get().to(routes::get_compliance_kpis)))
+                    .service(web::resource("/reports/compliance-overview").route(web::get().to(routes::get_compliance_overview)))
+                    .service(web::resource("/reports/monthly-summary").route(web::get().to(routes::get_monthly_compliance_summary)))
+                    .service(web::resource("/reports/monthly-summary/export").route(web::get().to(routes::export_monthly_compliance_summary)))
                     .service(web::resource("/reports/tprm-compliance").route(web::get().to(routes::get_tprm_compliance_report)))
                     .service(web::resource("/reports/dora-compliance").route(web::get().to(routes::get_dora_compliance_report)))
                     .service(web::resource("/reports/nis2-compliance").route(web::get().to(routes::get_nis2_compliance_report)))
@@ -577,7 +631,13 @@ async fn main() -> std::io::Result<()> {
                     .url("/api-doc/openapi.json", ApiDoc::openapi())
             )
     })
-    .bind(("0.0.0.0", 8080))?
+    .bind((
+        std::env::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+        std::env::var("SERVER_PORT")
+            .unwrap_or_else(|_| "8080".to_string())
+            .parse::<u16>()
+            .expect("SERVER_PORT must be a valid port number"),
+    ))?
     .run()
     .await
 }

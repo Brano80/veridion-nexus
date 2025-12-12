@@ -395,6 +395,41 @@ cargo test
 cargo test --test integration_test
 ```
 
+### Test Shadow Mode
+
+Shadow Mode is fully implemented and can be tested using the provided test scripts:
+
+**Quick Test (PowerShell):**
+```powershell
+.\tests\test_shadow_mode_simple.ps1
+```
+
+**Complete Test Suite (PowerShell):**
+```powershell
+.\tests\shadow_mode_test.ps1
+```
+
+**Complete Test Suite (Bash):**
+```bash
+chmod +x tests/shadow_mode_test.sh
+./tests/shadow_mode_test.sh
+```
+
+**Manual Testing:**
+See [Shadow Mode Manual Test Checklist](tests/SHADOW_MODE_MANUAL_TEST_CHECKLIST.md) for comprehensive manual testing guide.
+
+**Test Coverage:**
+- ✅ Enforcement mode toggle API
+- ✅ Shadow mode logging in `/log_action`
+- ✅ Analytics API with filters
+- ✅ CSV/JSON export functionality
+- ✅ Frontend dashboard
+- ✅ Alert system with rate limiting
+- ✅ GDPR integration
+
+**Test Report:**
+See [Shadow Mode Test Report](tests/SHADOW_MODE_TEST_REPORT.md) for detailed test results.
+
 ### Test with Python Agent
 ```bash
 python test_agent.py

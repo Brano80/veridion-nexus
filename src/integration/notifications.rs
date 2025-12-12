@@ -50,6 +50,9 @@ pub enum NotificationType {
     PolicyApprovalPending, // Policy requires approval
     PolicyApprovalCompleted, // Policy approved/rejected
     PolicyAutoRollback, // Policy auto-rolled back
+    CanaryPromotion, // Canary deployment auto-promoted
+    CanaryRollback, // Canary deployment auto-rolled back
+    ComplianceViolation, // Compliance violation detected
 }
 
 impl ToString for NotificationType {
@@ -69,6 +72,9 @@ impl ToString for NotificationType {
             NotificationType::PolicyApprovalPending => "POLICY_APPROVAL_PENDING".to_string(),
             NotificationType::PolicyApprovalCompleted => "POLICY_APPROVAL_COMPLETED".to_string(),
             NotificationType::PolicyAutoRollback => "POLICY_AUTO_ROLLBACK".to_string(),
+            NotificationType::CanaryPromotion => "CANARY_PROMOTION".to_string(),
+            NotificationType::CanaryRollback => "CANARY_ROLLBACK".to_string(),
+            NotificationType::ComplianceViolation => "COMPLIANCE_VIOLATION".to_string(),
         }
     }
 }
@@ -801,6 +807,522 @@ impl NotificationService {
         let request = NotificationRequest {
             user_id: user_id_str.to_string(),
             notification_type: NotificationType::CircuitBreakerOpened,
+            channel: channel_to_use,
+            subject: Some(subject),
+            body,
+            language: Some("en".to_string()),
+            related_entity_type: Some("POLICY_VERSION".to_string()),
+            related_entity_id: Some(policy_id.to_string()),
+        };
+
+        let mut last_result = Err("No channels available".to_string());
+        for ch_str in &preferred_channels {
+            let ch = match ch_str.as_str() {
+                "EMAIL" => NotificationChannel::Email,
+                "SMS" => NotificationChannel::Sms,
+                "IN_APP" => NotificationChannel::InApp,
+                _ => continue,
+            };
+
+            let mut req = request.clone();
+            req.channel = ch;
+            last_result = self.send_notification(db_pool, req).await;
+            if last_result.is_ok() {
+                break;
+            }
+        }
+
+        last_result
+    }
+
+    /// Send canary promotion alert
+    pub async fn send_canary_promotion_alert(
+        &self,
+        db_pool: &PgPool,
+        policy_id: &str,
+        policy_type: &str,
+        from_percentage: i32,
+        to_percentage: i32,
+        success_rate: f64,
+        total_requests: i64,
+        user_id: Option<&str>,
+    ) -> Result<String, String> {
+        let user_id_str = user_id.unwrap_or("system");
+        let preferred_channels: Vec<String> = sqlx::query_scalar(
+            "SELECT channel FROM user_notification_preferences 
+             WHERE user_id::text = $1 AND enabled = true
+             UNION SELECT 'EMAIL' WHERE NOT EXISTS (
+                 SELECT 1 FROM user_notification_preferences WHERE user_id::text = $1
+             )"
+        )
+        .bind(user_id_str)
+        .fetch_all(db_pool)
+        .await
+        .unwrap_or_else(|_| vec!["EMAIL".to_string()]);
+
+        let channel_to_use = if preferred_channels.contains(&"EMAIL".to_string()) {
+            NotificationChannel::Email
+        } else if preferred_channels.contains(&"SMS".to_string()) {
+            NotificationChannel::Sms
+        } else {
+            NotificationChannel::InApp
+        };
+
+        let subject = format!("Canary Deployment Promoted: {} Policy", policy_type);
+        let body = format!(
+            "Canary deployment has been automatically promoted for policy {}:\n\n\
+            Policy Type: {}\n\
+            From: {}% traffic\n\
+            To: {}% traffic\n\
+            Success Rate: {:.2}%\n\
+            Total Requests: {}\n\
+            Timestamp: {}\n\n\
+            The policy has been promoted to the next tier based on success metrics. Monitor the deployment to ensure continued success.\n\n\
+            You can view canary deployment status in the Canary Deployment dashboard.",
+            policy_id,
+            policy_type,
+            from_percentage,
+            to_percentage,
+            success_rate,
+            total_requests,
+            Utc::now().format("%Y-%m-%d %H:%M:%S")
+        );
+
+        let request = NotificationRequest {
+            user_id: user_id_str.to_string(),
+            notification_type: NotificationType::CanaryPromotion,
+            channel: channel_to_use,
+            subject: Some(subject),
+            body,
+            language: Some("en".to_string()),
+            related_entity_type: Some("POLICY_VERSION".to_string()),
+            related_entity_id: Some(policy_id.to_string()),
+        };
+
+        let mut last_result = Err("No channels available".to_string());
+        for ch_str in &preferred_channels {
+            let ch = match ch_str.as_str() {
+                "EMAIL" => NotificationChannel::Email,
+                "SMS" => NotificationChannel::Sms,
+                "IN_APP" => NotificationChannel::InApp,
+                _ => continue,
+            };
+
+            let mut req = request.clone();
+            req.channel = ch;
+            last_result = self.send_notification(db_pool, req).await;
+            if last_result.is_ok() {
+                break;
+            }
+        }
+
+        last_result
+    }
+
+    /// Send canary rollback alert
+    pub async fn send_canary_rollback_alert(
+        &self,
+        db_pool: &PgPool,
+        policy_id: &str,
+        policy_type: &str,
+        from_percentage: i32,
+        to_percentage: i32,
+        success_rate: f64,
+        total_requests: i64,
+        user_id: Option<&str>,
+    ) -> Result<String, String> {
+        let user_id_str = user_id.unwrap_or("system");
+        let preferred_channels: Vec<String> = sqlx::query_scalar(
+            "SELECT channel FROM user_notification_preferences 
+             WHERE user_id::text = $1 AND enabled = true
+             UNION SELECT 'EMAIL' WHERE NOT EXISTS (
+                 SELECT 1 FROM user_notification_preferences WHERE user_id::text = $1
+             )"
+        )
+        .bind(user_id_str)
+        .fetch_all(db_pool)
+        .await
+        .unwrap_or_else(|_| vec!["EMAIL".to_string()]);
+
+        let channel_to_use = if preferred_channels.contains(&"EMAIL".to_string()) {
+            NotificationChannel::Email
+        } else if preferred_channels.contains(&"SMS".to_string()) {
+            NotificationChannel::Sms
+        } else {
+            NotificationChannel::InApp
+        };
+
+        let subject = format!("Canary Deployment Rolled Back: {} Policy", policy_type);
+        let body = format!(
+            "Canary deployment has been automatically rolled back for policy {}:\n\n\
+            Policy Type: {}\n\
+            From: {}% traffic\n\
+            To: {}% traffic\n\
+            Success Rate: {:.2}%\n\
+            Total Requests: {}\n\
+            Timestamp: {}\n\n\
+            The policy has been rolled back to a lower traffic percentage due to low success rate. Review the policy configuration and error logs before attempting to promote again.\n\n\
+            You can view canary deployment status in the Canary Deployment dashboard.",
+            policy_id,
+            policy_type,
+            from_percentage,
+            to_percentage,
+            success_rate,
+            total_requests,
+            Utc::now().format("%Y-%m-%d %H:%M:%S")
+        );
+
+        let request = NotificationRequest {
+            user_id: user_id_str.to_string(),
+            notification_type: NotificationType::CanaryRollback,
+            channel: channel_to_use,
+            subject: Some(subject),
+            body,
+            language: Some("en".to_string()),
+            related_entity_type: Some("POLICY_VERSION".to_string()),
+            related_entity_id: Some(policy_id.to_string()),
+        };
+
+        let mut last_result = Err("No channels available".to_string());
+        for ch_str in &preferred_channels {
+            let ch = match ch_str.as_str() {
+                "EMAIL" => NotificationChannel::Email,
+                "SMS" => NotificationChannel::Sms,
+                "IN_APP" => NotificationChannel::InApp,
+                _ => continue,
+            };
+
+            let mut req = request.clone();
+            req.channel = ch;
+            last_result = self.send_notification(db_pool, req).await;
+            if last_result.is_ok() {
+                break;
+            }
+        }
+
+        last_result
+    }
+
+    /// Send compliance violation alert
+    /// Alerts when a compliance violation is detected (e.g., blocked proxy request)
+    pub async fn send_compliance_violation_alert(
+        &self,
+        db_pool: &PgPool,
+        agent_id: &str,
+        violation_type: &str,
+        violation_reason: &str,
+        target_url: Option<&str>,
+        policy_name: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<String, String> {
+        let user_id_str = user_id.unwrap_or("system");
+        
+        // Rate limiting: Check if we've sent an alert for this agent in the last 5 minutes
+        let rate_limit_check: Option<i64> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_notifications
+             WHERE related_entity_id = $1
+               AND notification_type = 'COMPLIANCE_VIOLATION'
+               AND created_at > NOW() - INTERVAL '5 minutes'
+               AND status = 'SENT'"
+        )
+        .bind(agent_id)
+        .fetch_optional(db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        if rate_limit_check.unwrap_or(0) > 0 {
+            return Err("Rate limit: Alert already sent for this agent in the last 5 minutes".to_string());
+        }
+
+        let preferred_channels: Vec<String> = sqlx::query_scalar(
+            "SELECT channel FROM user_notification_preferences 
+             WHERE user_id::text = $1 AND enabled = true
+             UNION SELECT 'EMAIL' WHERE NOT EXISTS (
+                 SELECT 1 FROM user_notification_preferences WHERE user_id::text = $1
+             )"
+        )
+        .bind(user_id_str)
+        .fetch_all(db_pool)
+        .await
+        .unwrap_or_else(|_| vec!["EMAIL".to_string()]);
+
+        let channel_to_use = if preferred_channels.contains(&"EMAIL".to_string()) {
+            NotificationChannel::Email
+        } else if preferred_channels.contains(&"SMS".to_string()) {
+            NotificationChannel::Sms
+        } else {
+            NotificationChannel::InApp
+        };
+
+        let subject = format!("Compliance Violation Alert: {}", violation_type);
+        let mut body = format!(
+            "A compliance violation has been detected:\n\n\
+            Violation Type: {}\n\
+            Reason: {}\n\
+            Agent ID: {}\n",
+            violation_type,
+            violation_reason,
+            agent_id
+        );
+
+        if let Some(url) = target_url {
+            body.push_str(&format!("Target URL: {}\n", url));
+        }
+
+        if let Some(policy) = policy_name {
+            body.push_str(&format!("Policy: {}\n", policy));
+        }
+
+        body.push_str(&format!(
+            "Timestamp: {}\n\n\
+            This violation was blocked to maintain compliance. Review the policy configuration and agent behavior.\n\n\
+            View details in the Compliance Dashboard.",
+            Utc::now().format("%Y-%m-%d %H:%M:%S")
+        ));
+
+        let request = NotificationRequest {
+            user_id: user_id_str.to_string(),
+            notification_type: NotificationType::ComplianceViolation,
+            channel: channel_to_use,
+            subject: Some(subject),
+            body,
+            language: Some("en".to_string()),
+            related_entity_type: Some("COMPLIANCE_RECORD".to_string()),
+            related_entity_id: Some(agent_id.to_string()),
+        };
+
+        let mut last_result = Err("No channels available".to_string());
+        for ch_str in &preferred_channels {
+            let ch = match ch_str.as_str() {
+                "EMAIL" => NotificationChannel::Email,
+                "SMS" => NotificationChannel::Sms,
+                "IN_APP" => NotificationChannel::InApp,
+                _ => continue,
+            };
+
+            let mut req = request.clone();
+            req.channel = ch;
+            last_result = self.send_notification(db_pool, req).await;
+            if last_result.is_ok() {
+                break;
+            }
+        }
+
+        last_result
+    }
+
+    /// Send policy health degraded alert
+    /// Alerts when a policy's health status degrades (error rate >= 5%)
+    pub async fn send_policy_health_degraded_alert(
+        &self,
+        db_pool: &PgPool,
+        policy_id: &str,
+        policy_name: &str,
+        policy_type: &str,
+        error_rate: f64,
+        success_rate: f64,
+        total_requests: i64,
+        avg_latency_ms: Option<f64>,
+        user_id: Option<&str>,
+    ) -> Result<String, String> {
+        let user_id_str = user_id.unwrap_or("system");
+        
+        // Rate limiting: Check if we've sent a degraded alert for this policy in the last 15 minutes
+        let rate_limit_check: Option<i64> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_notifications
+             WHERE related_entity_id = $1
+               AND notification_type = 'POLICY_HEALTH_DEGRADED'
+               AND created_at > NOW() - INTERVAL '15 minutes'
+               AND status = 'SENT'"
+        )
+        .bind(policy_id)
+        .fetch_optional(db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        if rate_limit_check.unwrap_or(0) > 0 {
+            return Err("Rate limit: Alert already sent for this policy in the last 15 minutes".to_string());
+        }
+
+        let preferred_channels: Vec<String> = sqlx::query_scalar(
+            "SELECT channel FROM user_notification_preferences 
+             WHERE user_id::text = $1 AND enabled = true
+             UNION SELECT 'EMAIL' WHERE NOT EXISTS (
+                 SELECT 1 FROM user_notification_preferences WHERE user_id::text = $1
+             )"
+        )
+        .bind(user_id_str)
+        .fetch_all(db_pool)
+        .await
+        .unwrap_or_else(|_| vec!["EMAIL".to_string()]);
+
+        let channel_to_use = if preferred_channels.contains(&"EMAIL".to_string()) {
+            NotificationChannel::Email
+        } else if preferred_channels.contains(&"SMS".to_string()) {
+            NotificationChannel::Sms
+        } else {
+            NotificationChannel::InApp
+        };
+
+        let subject = format!("Policy Health Degraded: {}", policy_name);
+        let mut body = format!(
+            "Policy health has degraded below acceptable thresholds:\n\n\
+            Policy: {} ({})\n\
+            Policy Type: {}\n\
+            Error Rate: {:.2}%\n\
+            Success Rate: {:.2}%\n\
+            Total Requests: {}\n",
+            policy_name,
+            policy_id,
+            policy_type,
+            error_rate,
+            success_rate,
+            total_requests
+        );
+
+        if let Some(latency) = avg_latency_ms {
+            body.push_str(&format!("Average Latency: {:.2} ms\n", latency));
+        }
+
+        body.push_str(&format!(
+            "Timestamp: {}\n\n\
+            The policy is experiencing elevated error rates. Review the policy configuration, error logs, and consider:\n\
+            - Checking circuit breaker status\n\
+            - Reviewing recent policy changes\n\
+            - Analyzing error patterns\n\
+            - Adjusting policy thresholds if needed\n\n\
+            View policy health details in the Policy Health Dashboard.",
+            Utc::now().format("%Y-%m-%d %H:%M:%S")
+        ));
+
+        let request = NotificationRequest {
+            user_id: user_id_str.to_string(),
+            notification_type: NotificationType::PolicyHealthDegraded,
+            channel: channel_to_use,
+            subject: Some(subject),
+            body,
+            language: Some("en".to_string()),
+            related_entity_type: Some("POLICY_VERSION".to_string()),
+            related_entity_id: Some(policy_id.to_string()),
+        };
+
+        let mut last_result = Err("No channels available".to_string());
+        for ch_str in &preferred_channels {
+            let ch = match ch_str.as_str() {
+                "EMAIL" => NotificationChannel::Email,
+                "SMS" => NotificationChannel::Sms,
+                "IN_APP" => NotificationChannel::InApp,
+                _ => continue,
+            };
+
+            let mut req = request.clone();
+            req.channel = ch;
+            last_result = self.send_notification(db_pool, req).await;
+            if last_result.is_ok() {
+                break;
+            }
+        }
+
+        last_result
+    }
+
+    /// Send policy health critical alert
+    /// Alerts when a policy's health status becomes critical (error rate >= 10% or circuit breaker OPEN)
+    pub async fn send_policy_health_critical_alert(
+        &self,
+        db_pool: &PgPool,
+        policy_id: &str,
+        policy_name: &str,
+        policy_type: &str,
+        error_rate: f64,
+        success_rate: f64,
+        total_requests: i64,
+        avg_latency_ms: Option<f64>,
+        circuit_breaker_state: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<String, String> {
+        let user_id_str = user_id.unwrap_or("system");
+        
+        // Rate limiting: Check if we've sent a critical alert for this policy in the last 30 minutes
+        let rate_limit_check: Option<i64> = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_notifications
+             WHERE related_entity_id = $1
+               AND notification_type = 'POLICY_HEALTH_CRITICAL'
+               AND created_at > NOW() - INTERVAL '30 minutes'
+               AND status = 'SENT'"
+        )
+        .bind(policy_id)
+        .fetch_optional(db_pool)
+        .await
+        .ok()
+        .flatten();
+
+        if rate_limit_check.unwrap_or(0) > 0 {
+            return Err("Rate limit: Alert already sent for this policy in the last 30 minutes".to_string());
+        }
+
+        let preferred_channels: Vec<String> = sqlx::query_scalar(
+            "SELECT channel FROM user_notification_preferences 
+             WHERE user_id::text = $1 AND enabled = true
+             UNION SELECT 'EMAIL' WHERE NOT EXISTS (
+                 SELECT 1 FROM user_notification_preferences WHERE user_id::text = $1
+             )"
+        )
+        .bind(user_id_str)
+        .fetch_all(db_pool)
+        .await
+        .unwrap_or_else(|_| vec!["EMAIL".to_string()]);
+
+        let channel_to_use = if preferred_channels.contains(&"EMAIL".to_string()) {
+            NotificationChannel::Email
+        } else if preferred_channels.contains(&"SMS".to_string()) {
+            NotificationChannel::Sms
+        } else {
+            NotificationChannel::InApp
+        };
+
+        let subject = format!("🚨 CRITICAL: Policy Health Alert - {}", policy_name);
+        let mut body = format!(
+            "⚠️ CRITICAL: Policy health has reached critical levels requiring immediate attention:\n\n\
+            Policy: {} ({})\n\
+            Policy Type: {}\n\
+            Error Rate: {:.2}%\n\
+            Success Rate: {:.2}%\n\
+            Total Requests: {}\n",
+            policy_name,
+            policy_id,
+            policy_type,
+            error_rate,
+            success_rate,
+            total_requests
+        );
+
+        if let Some(latency) = avg_latency_ms {
+            body.push_str(&format!("Average Latency: {:.2} ms\n", latency));
+        }
+
+        if let Some(cb_state) = circuit_breaker_state {
+            body.push_str(&format!("Circuit Breaker State: {}\n", cb_state));
+        }
+
+        body.push_str(&format!(
+            "Timestamp: {}\n\n\
+            ⚠️ IMMEDIATE ACTION REQUIRED:\n\
+            - The policy is experiencing critical error rates\n\
+            - Circuit breaker may be OPEN, disabling the policy\n\
+            - Review error logs immediately\n\
+            - Consider rolling back recent policy changes\n\
+            - Check system health and dependencies\n\n\
+            View policy health details in the Policy Health Dashboard.\n\
+            Circuit Breaker controls are available in the Circuit Breaker Dashboard.",
+            Utc::now().format("%Y-%m-%d %H:%M:%S")
+        ));
+
+        let request = NotificationRequest {
+            user_id: user_id_str.to_string(),
+            notification_type: NotificationType::PolicyHealthCritical,
             channel: channel_to_use,
             subject: Some(subject),
             body,

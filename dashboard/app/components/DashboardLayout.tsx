@@ -30,6 +30,15 @@ import {
   PieChart,
   Globe,
   Sparkles,
+  Gauge,
+  CheckCircle2,
+  RotateCcw,
+  TrendingUp,
+  Network,
+  Brain,
+  Cloud,
+  FileCheck,
+  Scale,
 } from "lucide-react";
 import { useState } from "react";
 import { useModules } from "../hooks/useModules";
@@ -37,7 +46,7 @@ import { useModules } from "../hooks/useModules";
 // Core Compliance Hub navigation (always visible)
 const coreNavigation = [
   { name: "Setup Wizard", href: "/wizard", icon: Sparkles, module: null },
-  { name: "Compliance Overview", href: "/", icon: LayoutDashboard, module: null },
+  { name: "Compliance Overview", href: "/compliance-overview", icon: LayoutDashboard, module: null },
   { name: "Runtime Logs", href: "/runtime-logs", icon: ScrollText, module: null },
   { name: "Human Oversight", href: "/human-oversight", icon: Eye, module: "module_human_oversight" },
   { name: "Data Shredding", href: "/data-subjects", icon: Trash2, module: "module_data_subject_rights" },
@@ -69,6 +78,19 @@ const pluginNavigation = [
   { name: "AI-BOM", href: "/ai-bom", icon: Package, module: "module_ai_bom" },
   { name: "Green AI", href: "/green-ai", icon: Leaf, module: "module_green_ai" },
   { name: "Webhooks", href: "/webhooks", icon: Webhook, module: "integration_webhooks" },
+];
+
+// Enterprise navigation (Fáza 2 features)
+const enterpriseNavigation = [
+  { name: "DORA Compliance", href: "/dora-compliance", icon: FileCheck, module: null },
+  { name: "NIS2 Compliance", href: "/nis2-compliance", icon: Scale, module: null },
+  { name: "TPRM Compliance", href: "/tprm-compliance", icon: Building2, module: null },
+  { name: "Approval Workflow", href: "/approvals", icon: CheckCircle2, module: null },
+  { name: "Rollback History", href: "/rollback-history", icon: RotateCcw, module: null },
+  { name: "Configuration Drift", href: "/configuration-drift", icon: TrendingUp, module: null },
+  { name: "AI Explainability", href: "/ai-explainability", icon: Brain, module: null },
+  { name: "Multi-Cloud", href: "/multi-cloud", icon: Cloud, module: null },
+  { name: "Advanced Analytics", href: "/advanced-analytics", icon: Gauge, module: null },
 ];
 
 export default function DashboardLayout({
@@ -165,6 +187,35 @@ export default function DashboardLayout({
               })}
             </div>
           )}
+
+          {/* Enterprise Features (Fáza 2) */}
+          {enterpriseNavigation.length > 0 && (
+            <div className="mt-6">
+              <div className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                Enterprise Features
+              </div>
+              {enterpriseNavigation.map((item) => {
+                const isActive = pathname === item.href;
+                const Icon = item.icon;
+                return (
+                  <Link
+                    key={item.name}
+                    href={item.href}
+                    onClick={() => setSidebarOpen(false)}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                      isActive
+                        ? "bg-blue-900/30 text-blue-400 border border-blue-800"
+                        : "text-slate-400 hover:bg-slate-800 hover:text-slate-200 opacity-60"
+                    }`}
+                    title="Enterprise feature - Coming soon"
+                  >
+                    <Icon size={18} />
+                    <span className="text-sm font-medium">{item.name}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
         </nav>
 
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-800 bg-slate-900">
@@ -181,6 +232,15 @@ export default function DashboardLayout({
       <main className="lg:ml-64 p-6 lg:p-10">
         {children}
       </main>
+
+      {/* Footer */}
+      <footer className="lg:ml-64 border-t border-slate-800 py-4 bg-slate-900">
+        <div className="max-w-7xl mx-auto px-6 text-center text-xs text-slate-500">
+          <p>
+            Veridion Nexus provides technical governance tools to assist with regulatory compliance. It does not constitute legal advice. You remain solely responsible for your compliance with GDPR, DORA, and the EU AI Act.
+          </p>
+        </div>
+      </footer>
 
       {/* Overlay for mobile */}
       {sidebarOpen && (

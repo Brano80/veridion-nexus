@@ -1,0 +1,32 @@
+# Project Context
+
+- Stack: Rust (Actix-web), PostgreSQL (SQLx), Docker Compose, Next.js
+
+- Deployment: Docker containers managed via docker-compose.yml
+
+- Compliance: DORA & EU AI Act project.
+
+
+
+# Coding Standards
+
+- Always use async/await in Rust.
+
+- When fixing database issues, always check `migrations/` folder first.
+
+- If editing Dockerfile, always propose a rebuild command.
+
+- Backend: Vždy spustiť cargo check po každej väčšej zmene.
+
+- Frontend: Vždy skontrolovať layout.tsx alebo sidebar, či je tam nový link.
+
+- Databáza: Ak meníte DB, vždy skontrolovať priečinok migrations/, či pribudol nový súbor.
+
+
+
+# Docker Instructions
+
+- To restart DB: `docker-compose restart postgres`
+
+- To view logs: `docker-compose logs -f veridion-nexus-api`
+

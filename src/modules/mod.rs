@@ -12,3 +12,6 @@ pub mod monitoring;
 pub mod green_ai;
 pub mod ai_bom;
 
+// GDPR Compliance Modules
+pub mod gdpr;
+

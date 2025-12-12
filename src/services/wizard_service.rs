@@ -53,6 +53,7 @@ pub struct RecommendedModule {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ModuleRecommendationResponse {
+    pub core_modules: Vec<RecommendedModule>,
     pub recommended_modules: Vec<RecommendedModule>,
     pub required_count: i32,
     pub recommended_count: i32,
@@ -282,12 +283,23 @@ impl WizardService {
             ("module_monitoring".to_string(), 100.0),
             ("module_green_ai".to_string(), 50.0),
             ("module_ai_bom".to_string(), 100.0),
+            ("gdpr_article_44_49".to_string(), 200.0),
+            ("gdpr_article_28".to_string(), 150.0),
+            ("gdpr_article_12".to_string(), 75.0),
         ]);
 
         // Calculate module costs
         let module_cost: f64 = selected_modules
             .iter()
-            .filter_map(|m| module_prices.get(m))
+            .filter_map(|m| {
+                // Try exact match first
+                if let Some(&price) = module_prices.get(m) {
+                    return Some(price);
+                }
+                // Debug: log if module not found
+                eprintln!("Warning: Module '{}' not found in pricing HashMap", m);
+                None
+            })
             .sum();
 
         // Calculate total monthly
@@ -585,6 +597,32 @@ impl WizardService {
     ) -> Result<ModuleRecommendationResponse, sqlx::Error> {
         use sqlx::Row;
 
+        // 0. Get core modules (always included, no pricing)
+        let core_modules_rows = sqlx::query(
+            r#"
+            SELECT m.id, m.name, m.display_name, m.description, m.category, m.requires_license
+            FROM modules m
+            WHERE m.category = 'core'
+            AND m.name IN ('core_sovereign_lock', 'core_crypto_shredder', 'core_privacy_bridge', 'core_annex_iv')
+            ORDER BY m.name
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let core_modules: Vec<RecommendedModule> = core_modules_rows
+            .iter()
+            .map(|row| RecommendedModule {
+                module_name: row.get("name"),
+                display_name: row.get("display_name"),
+                description: row.get("description"),
+                category: row.get("category"),
+                recommendation_reason: "Core module - always included".to_string(),
+                priority: "CORE".to_string(),
+                requires_license: row.get("requires_license"),
+            })
+            .collect();
+
         // 1. Get industry-based recommendations
         let industry_modules = sqlx::query(
             r#"
@@ -745,9 +783,17 @@ impl WizardService {
             }
         }
 
-        let recommended_modules: Vec<RecommendedModule> = module_map.into_values().collect();
+        let mut recommended_modules: Vec<RecommendedModule> = module_map.into_values().collect();
+        
+        // Filter out core modules from recommended modules (they should not appear twice)
+        let core_module_names: std::collections::HashSet<String> = core_modules
+            .iter()
+            .map(|m| m.module_name.clone())
+            .collect();
+        recommended_modules.retain(|m| !core_module_names.contains(&m.module_name));
 
         Ok(ModuleRecommendationResponse {
+            core_modules,
             recommended_modules,
             required_count,
             recommended_count,

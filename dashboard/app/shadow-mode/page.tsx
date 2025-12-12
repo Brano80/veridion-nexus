@@ -3,7 +3,7 @@
 import DashboardLayout from "../components/DashboardLayout";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { Eye, AlertTriangle, TrendingUp, Users, Globe, Activity, Shield, CheckCircle, XCircle, BarChart3 } from "lucide-react";
+import { Eye, AlertTriangle, TrendingUp, Users, Globe, Activity, Shield, CheckCircle, XCircle, BarChart3, Download } from "lucide-react";
 import { useState } from "react";
 import { getAuthHeaders } from "../utils/auth";
 
@@ -137,6 +137,54 @@ export default function ShadowModePage() {
               onChange={(e) => setAgentFilter(e.target.value)}
               className="bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-slate-200 w-64"
             />
+            <button
+              onClick={() => {
+                const params = new URLSearchParams({ 
+                  format: "csv", 
+                  days: timeRange.toString() 
+                });
+                if (agentFilter) {
+                  params.append("agent_id", agentFilter);
+                }
+                window.open(`${API_BASE}/analytics/shadow-mode/export?${params}`, "_blank");
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-900/30 hover:bg-emerald-800/50 border border-emerald-800 rounded-lg text-emerald-400 transition-colors"
+            >
+              <Download size={18} />
+              Export CSV
+            </button>
+            <button
+              onClick={() => {
+                const params = new URLSearchParams({ 
+                  format: "json", 
+                  days: timeRange.toString() 
+                });
+                if (agentFilter) {
+                  params.append("agent_id", agentFilter);
+                }
+                window.open(`${API_BASE}/analytics/shadow-mode/export?${params}`, "_blank");
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 transition-colors"
+            >
+              <Download size={18} />
+              Export JSON
+            </button>
+            <button
+              onClick={() => {
+                const params = new URLSearchParams({ 
+                  format: "pdf", 
+                  days: timeRange.toString() 
+                });
+                if (agentFilter) {
+                  params.append("agent_id", agentFilter);
+                }
+                window.open(`${API_BASE}/analytics/shadow-mode/export?${params}`, "_blank");
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-red-900/30 hover:bg-red-800/50 border border-red-800 rounded-lg text-red-400 transition-colors"
+            >
+              <Download size={18} />
+              Export PDF
+            </button>
           </div>
         </div>
 

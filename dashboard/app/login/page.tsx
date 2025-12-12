@@ -12,10 +12,17 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    
+    if (!agreedToTerms) {
+      setError("Please agree to the Terms of Service to continue");
+      return;
+    }
+    
     setLoading(true);
 
     try {
@@ -34,7 +41,7 @@ export default function LoginPage() {
 
       const data = await response.json();
       setAuthToken(data.token);
-      router.push("/");
+      router.push("/dashboard");
     } catch (err: any) {
       setError(err.message || "Failed to login");
     } finally {
@@ -83,9 +90,31 @@ export default function LoginPage() {
             </div>
           )}
 
+          <div className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              id="terms-checkbox"
+              checked={agreedToTerms}
+              onChange={(e) => setAgreedToTerms(e.target.checked)}
+              className="mt-1 w-4 h-4 text-emerald-600 bg-slate-700 border-slate-600 rounded focus:ring-emerald-500"
+            />
+            <label htmlFor="terms-checkbox" className="text-xs text-slate-400">
+              I agree to the{" "}
+              <a
+                href="/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-emerald-400 hover:text-emerald-300 underline"
+              >
+                Terms of Service
+              </a>
+              {" "}and acknowledge that Veridion Nexus does not provide legal advice.
+            </label>
+          </div>
+
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !agreedToTerms}
             className="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
           >
             {loading ? "Logging in..." : "Login"}

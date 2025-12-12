@@ -229,4 +229,350 @@ impl BackgroundWorker {
             }
         }
     }
+
+    /// Process circuit breaker recovery (auto-close after cooldown)
+    pub async fn process_circuit_breaker_recovery(&self) {
+        loop {
+            // Check for circuit breakers that need recovery every minute
+            sleep(Duration::from_secs(60)).await;
+
+            #[derive(sqlx::FromRow)]
+            struct OpenCircuitBreaker {
+                policy_version_id: uuid::Uuid,
+                policy_type: String,
+                opened_at: chrono::DateTime<chrono::Utc>,
+                cooldown_minutes: i32,
+            }
+
+            let open_circuits: Vec<OpenCircuitBreaker> = match sqlx::query_as::<_, OpenCircuitBreaker>(
+                "SELECT 
+                    id as policy_version_id,
+                    policy_type,
+                    circuit_breaker_opened_at as opened_at,
+                    COALESCE(circuit_breaker_cooldown_minutes, 15) as cooldown_minutes
+                 FROM policy_versions
+                 WHERE circuit_breaker_enabled = true
+                   AND circuit_breaker_state = 'OPEN'
+                   AND circuit_breaker_opened_at IS NOT NULL
+                   AND circuit_breaker_opened_at + (COALESCE(circuit_breaker_cooldown_minutes, 15) || ' minutes')::INTERVAL <= CURRENT_TIMESTAMP"
+            )
+            .fetch_all(&self.db_pool)
+            .await
+            {
+                Ok(circuits) => circuits,
+                Err(e) => {
+                    eprintln!("Error fetching open circuit breakers: {}", e);
+                    continue;
+                }
+            };
+
+            for circuit in open_circuits {
+                // Check if error rate has improved
+                let current_error_rate: Option<f64> = sqlx::query_scalar(
+                    "SELECT error_rate 
+                     FROM policy_error_tracking
+                     WHERE policy_version_id = $1
+                     ORDER BY window_end DESC
+                     LIMIT 1"
+                )
+                .bind(circuit.policy_version_id)
+                .fetch_optional(&self.db_pool)
+                .await
+                .ok()
+                .flatten();
+
+                // Get error threshold
+                let error_threshold: Option<f64> = sqlx::query_scalar(
+                    "SELECT circuit_breaker_error_threshold 
+                     FROM policy_versions
+                     WHERE id = $1"
+                )
+                .bind(circuit.policy_version_id)
+                .fetch_optional(&self.db_pool)
+                .await
+                .ok()
+                .flatten();
+
+                let threshold = error_threshold.unwrap_or(10.0);
+                let should_close = current_error_rate.map(|rate| rate < threshold).unwrap_or(true);
+
+                if should_close {
+                    // Close circuit breaker
+                    let _ = sqlx::query(
+                        "UPDATE policy_versions 
+                         SET circuit_breaker_state = 'CLOSED',
+                             circuit_breaker_opened_at = NULL
+                         WHERE id = $1"
+                    )
+                    .bind(circuit.policy_version_id)
+                    .execute(&self.db_pool)
+                    .await;
+
+                    // Log to history
+                    let _ = sqlx::query(
+                        "INSERT INTO circuit_breaker_history (
+                            policy_version_id, state_transition, error_rate,
+                            error_count, total_requests, triggered_by, notes, timestamp
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+                    )
+                    .bind(circuit.policy_version_id)
+                    .bind("CLOSED")
+                    .bind(current_error_rate.unwrap_or(0.0))
+                    .bind(0)
+                    .bind(0)
+                    .bind("AUTO_RECOVERY")
+                    .bind(format!("Auto-closed after {} minute cooldown. Error rate: {:.2}%", circuit.cooldown_minutes, current_error_rate.unwrap_or(0.0)))
+                    .bind(chrono::Utc::now())
+                    .execute(&self.db_pool)
+                    .await;
+
+                    println!("✅ Circuit breaker auto-closed for policy {} after cooldown", circuit.policy_version_id);
+                } else {
+                    // Error rate still too high, extend cooldown
+                    let _ = sqlx::query(
+                        "UPDATE policy_versions 
+                         SET circuit_breaker_opened_at = CURRENT_TIMESTAMP
+                         WHERE id = $1"
+                    )
+                    .bind(circuit.policy_version_id)
+                    .execute(&self.db_pool)
+                    .await;
+
+                    println!("⚠️ Circuit breaker kept open for policy {} - error rate still high: {:.2}%", 
+                        circuit.policy_version_id, current_error_rate.unwrap_or(0.0));
+                }
+            }
+        }
+    }
+
+    /// Process canary deployment auto-promote/rollback
+    pub async fn process_canary_deployment(&self) {
+        loop {
+            // Check for canary deployments that need evaluation every 5 minutes
+            sleep(Duration::from_secs(300)).await;
+
+            #[derive(sqlx::FromRow)]
+            struct CanaryPolicy {
+                policy_version_id: uuid::Uuid,
+                policy_type: String,
+                rollout_percentage: i32,
+                auto_promote_enabled: Option<bool>,
+                auto_rollback_enabled: Option<bool>,
+                promotion_threshold: Option<f64>,
+                rollback_threshold: Option<f64>,
+                min_requests_for_promotion: Option<i64>,
+                evaluation_window_minutes: Option<i32>,
+            }
+
+            let canary_policies: Vec<CanaryPolicy> = match sqlx::query_as::<_, CanaryPolicy>(
+                "SELECT 
+                    id as policy_version_id,
+                    policy_type,
+                    COALESCE(rollout_percentage, 100) as rollout_percentage,
+                    canary_auto_promote_enabled as auto_promote_enabled,
+                    canary_auto_rollback_enabled as auto_rollback_enabled,
+                    canary_success_threshold as promotion_threshold,
+                    canary_failure_threshold as rollback_threshold,
+                    canary_min_requests as min_requests_for_promotion,
+                    canary_evaluation_window_minutes as evaluation_window_minutes
+                 FROM policy_versions
+                 WHERE is_active = true 
+                   AND rollout_percentage IS NOT NULL 
+                   AND rollout_percentage < 100
+                   AND (canary_auto_promote_enabled = true OR canary_auto_rollback_enabled = true)"
+            )
+            .fetch_all(&self.db_pool)
+            .await
+            {
+                Ok(policies) => policies,
+                Err(e) => {
+                    eprintln!("Error fetching canary policies: {}", e);
+                    continue;
+                }
+            };
+
+            for policy in canary_policies {
+                let window_minutes = policy.evaluation_window_minutes.unwrap_or(10);
+                let now = chrono::Utc::now();
+                let window_start = now - chrono::Duration::minutes(window_minutes as i64);
+
+                // Get current success rate
+                let success_rate: Option<f64> = sqlx::query_scalar(
+                    "SELECT 
+                        CASE 
+                            WHEN SUM(total_requests) > 0 THEN
+                                (SUM(successful_requests)::DECIMAL / SUM(total_requests)::DECIMAL) * 100.0
+                            ELSE NULL
+                        END as success_rate
+                     FROM canary_metrics
+                     WHERE policy_version_id = $1 
+                       AND traffic_percentage = $2
+                       AND window_end >= $3"
+                )
+                .bind(policy.policy_version_id)
+                .bind(policy.rollout_percentage)
+                .bind(window_start)
+                .fetch_optional(&self.db_pool)
+                .await
+                .ok()
+                .flatten();
+
+                let total_requests: i64 = sqlx::query_scalar(
+                    "SELECT COALESCE(SUM(total_requests), 0)
+                     FROM canary_metrics
+                     WHERE policy_version_id = $1 
+                       AND traffic_percentage = $2
+                       AND window_end >= $3"
+                )
+                .bind(policy.policy_version_id)
+                .bind(policy.rollout_percentage)
+                .bind(window_start)
+                .fetch_one(&self.db_pool)
+                .await
+                .unwrap_or(0);
+
+                if let Some(rate) = success_rate {
+                    let min_requests = policy.min_requests_for_promotion.unwrap_or(100);
+                    
+                    // Check for auto-rollback
+                    if policy.auto_rollback_enabled.unwrap_or(false) {
+                        let rollback_threshold = policy.rollback_threshold.unwrap_or(5.0);
+                        
+                        if rate < rollback_threshold && total_requests >= min_requests {
+                            // Rollback to previous tier
+                            let prev_percentage = match policy.rollout_percentage {
+                                100 => 50,
+                                50 => 25,
+                                25 => 10,
+                                10 => 5,
+                                5 => 1,
+                                _ => 0,
+                            };
+
+                            if prev_percentage >= 0 {
+                                let _ = sqlx::query(
+                                    "UPDATE policy_versions 
+                                     SET rollout_percentage = $1
+                                     WHERE id = $2"
+                                )
+                                .bind(prev_percentage)
+                                .bind(policy.policy_version_id)
+                                .execute(&self.db_pool)
+                                .await;
+
+                                // Log rollback
+                                let _ = sqlx::query(
+                                    "INSERT INTO canary_deployment_history (
+                                        policy_version_id, action, from_percentage, to_percentage,
+                                        success_rate, total_requests, triggered_by, notes, timestamp
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                                )
+                                .bind(policy.policy_version_id)
+                                .bind("ROLLED_BACK")
+                                .bind(policy.rollout_percentage)
+                                .bind(prev_percentage)
+                                .bind(rate)
+                                .bind(total_requests)
+                                .bind("AUTO")
+                                .bind(format!("Auto-rolled back from {}% to {}% due to low success rate: {:.2}% (threshold: {:.2}%)", 
+                                    policy.rollout_percentage, prev_percentage, rate, rollback_threshold))
+                                .bind(now)
+                                .execute(&self.db_pool)
+                                .await;
+
+                                println!("⚠️ Canary auto-rollback: Policy {} from {}% to {}% (success rate: {:.2}%)", 
+                                    policy.policy_version_id, policy.rollout_percentage, prev_percentage, rate);
+
+                                // Send rollback notification
+                                let notification_service = crate::integration::notifications::NotificationService::new();
+                                let policy_id_str = policy.policy_version_id.to_string();
+                                let db_pool_clone = self.db_pool.clone();
+                                tokio::spawn(async move {
+                                    let _ = notification_service.send_canary_rollback_alert(
+                                        &db_pool_clone,
+                                        &policy_id_str,
+                                        &policy.policy_type,
+                                        policy.rollout_percentage,
+                                        prev_percentage,
+                                        rate,
+                                        total_requests,
+                                        None,
+                                    ).await;
+                                });
+                            }
+                        }
+                    }
+
+                    // Check for auto-promote
+                    if policy.auto_promote_enabled.unwrap_or(false) {
+                        let promotion_threshold = policy.promotion_threshold.unwrap_or(95.0);
+                        
+                        if rate >= promotion_threshold && total_requests >= min_requests {
+                            // Promote to next tier
+                            let next_percentage = match policy.rollout_percentage {
+                                1 => 5,
+                                5 => 10,
+                                10 => 25,
+                                25 => 50,
+                                50 => 100,
+                                _ => policy.rollout_percentage, // Already at max
+                            };
+
+                            if next_percentage > policy.rollout_percentage {
+                                let _ = sqlx::query(
+                                    "UPDATE policy_versions 
+                                     SET rollout_percentage = $1
+                                     WHERE id = $2"
+                                )
+                                .bind(next_percentage)
+                                .bind(policy.policy_version_id)
+                                .execute(&self.db_pool)
+                                .await;
+
+                                // Log promotion
+                                let _ = sqlx::query(
+                                    "INSERT INTO canary_deployment_history (
+                                        policy_version_id, action, from_percentage, to_percentage,
+                                        success_rate, total_requests, triggered_by, notes, timestamp
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                                )
+                                .bind(policy.policy_version_id)
+                                .bind("PROMOTED")
+                                .bind(policy.rollout_percentage)
+                                .bind(next_percentage)
+                                .bind(rate)
+                                .bind(total_requests)
+                                .bind("AUTO")
+                                .bind(format!("Auto-promoted from {}% to {}% based on success rate: {:.2}% (threshold: {:.2}%)", 
+                                    policy.rollout_percentage, next_percentage, rate, promotion_threshold))
+                                .bind(now)
+                                .execute(&self.db_pool)
+                                .await;
+
+                                println!("✅ Canary auto-promoted: Policy {} from {}% to {}% (success rate: {:.2}%)", 
+                                    policy.policy_version_id, policy.rollout_percentage, next_percentage, rate);
+
+                                // Send promotion notification
+                                let notification_service = crate::integration::notifications::NotificationService::new();
+                                let policy_id_str = policy.policy_version_id.to_string();
+                                let db_pool_clone = self.db_pool.clone();
+                                tokio::spawn(async move {
+                                    let _ = notification_service.send_canary_promotion_alert(
+                                        &db_pool_clone,
+                                        &policy_id_str,
+                                        &policy.policy_type,
+                                        policy.rollout_percentage,
+                                        next_percentage,
+                                        rate,
+                                        total_requests,
+                                        None,
+                                    ).await;
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

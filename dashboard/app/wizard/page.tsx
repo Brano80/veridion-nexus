@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import DashboardLayout from '../components/DashboardLayout';
+import WizardLayout from '../components/WizardLayout';
 // Wizard endpoints work without authentication (optional auth)
 import { Sparkles, ArrowRight, ArrowLeft, CheckCircle2, Loader2 } from 'lucide-react';
 
@@ -28,6 +28,7 @@ interface RecommendedModule {
 }
 
 interface ModuleRecommendation {
+  core_modules: RecommendedModule[];
   recommended_modules: RecommendedModule[];
   required_count: number;
   recommended_count: number;
@@ -150,6 +151,7 @@ export default function WizardPage() {
   const [pricing, setPricing] = useState<PricingBreakdown | null>(null);
   const [companyId, setCompanyId] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080/api/v1';
 
@@ -173,6 +175,11 @@ export default function WizardPage() {
       // Fetch recommendations and pricing when moving to step 3
       await fetchRecommendationsAndPricing();
     } else if (step === 3) {
+      // Validate terms agreement
+      if (!agreedToTerms) {
+        setError('Please agree to the Terms of Service to start your trial');
+        return;
+      }
       // Start trial
       await startTrial();
     }
@@ -204,13 +211,19 @@ export default function WizardPage() {
       const recData = await recResponse.json();
       setRecommendations(recData);
       
+      // Auto-select core modules (always included, no price)
+      const coreModuleNames = (recData.core_modules || [])
+        .map((m: RecommendedModule) => m.module_name);
+      
       // Auto-select required modules
       const required = recData.recommended_modules
         .filter((m: RecommendedModule) => m.priority === 'REQUIRED')
         .map((m: RecommendedModule) => m.module_name);
-      setSelectedModules(required);
+      
+      // Combine core and required modules
+      setSelectedModules([...coreModuleNames, ...required]);
 
-      // Calculate pricing with initially selected modules
+      // Calculate pricing with only recommended modules (exclude core modules)
       await calculatePricing(required);
     } catch (err: any) {
       let errorMessage = 'An error occurred';
@@ -249,7 +262,16 @@ export default function WizardPage() {
       setPricing(data);
     } catch (err: any) {
       console.error('Error calculating pricing:', err);
-      // Don't show error for pricing calculation, just log it
+      // Set fallback pricing if calculation fails
+      const fallbackPricing: PricingBreakdown = {
+        base_price: 299.00,
+        per_system_price: 100.00,
+        module_prices: {},
+        total_monthly: 299.00 + (100.00 * (profile.estimated_ai_systems || 1)),
+        total_annual: (299.00 + (100.00 * (profile.estimated_ai_systems || 1))) * 12 * 0.85,
+        savings_annual: (299.00 + (100.00 * (profile.estimated_ai_systems || 1))) * 12 * 0.15,
+      };
+      setPricing(fallbackPricing);
     }
   };
 
@@ -298,7 +320,7 @@ export default function WizardPage() {
       
       // Redirect to dashboard after successful trial start
       setTimeout(() => {
-        router.push('/');
+        router.push('/dashboard');
       }, 2000);
     } catch (err: any) {
       let errorMessage = 'An error occurred';
@@ -323,21 +345,30 @@ export default function WizardPage() {
   };
 
   const toggleModule = async (moduleName: string) => {
+    // Get core module names (cannot be toggled)
+    const coreModuleNames = recommendations?.core_modules?.map((m: RecommendedModule) => m.module_name) || [];
+    
+    // Prevent toggling core modules
+    if (coreModuleNames.includes(moduleName)) {
+      return;
+    }
+    
     const newSelection = selectedModules.includes(moduleName)
       ? selectedModules.filter(m => m !== moduleName)
       : [...selectedModules, moduleName];
     
     setSelectedModules(newSelection);
     
-    // Recalculate pricing when modules change
+    // Recalculate pricing when modules change (exclude core modules from pricing)
     if (pricing) {
-      await calculatePricing(newSelection);
+      const modulesForPricing = newSelection.filter(m => !coreModuleNames.includes(m));
+      await calculatePricing(modulesForPricing);
     }
   };
 
   return (
-    <DashboardLayout>
-      <div className="max-w-5xl mx-auto h-[calc(100vh-140px)] flex flex-col">
+    <WizardLayout>
+      <div className="max-w-5xl mx-auto px-6 py-8 flex flex-col min-h-[calc(100vh-80px)]">
         <div className="mb-4">
           <div className="flex items-center gap-2 mb-1">
             <Sparkles className="w-6 h-6 text-emerald-400" />
@@ -563,6 +594,41 @@ export default function WizardPage() {
                 </div>
               ) : recommendations ? (
                 <>
+                  {/* Core Modules - Always included, no pricing */}
+                  {recommendations.core_modules && recommendations.core_modules.length > 0 && (
+                    <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 mb-4">
+                      <h2 className="text-lg font-semibold text-slate-100 mb-2">
+                        Core Modules
+                      </h2>
+                      <p className="text-xs text-slate-400 mb-3">
+                        Always included - no additional cost
+                      </p>
+
+                      <div className="space-y-2">
+                        {recommendations.core_modules.map((module) => (
+                          <div
+                            key={module.module_name}
+                            className="p-2 border border-slate-700 rounded-lg bg-slate-800/50 opacity-75"
+                          >
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={true}
+                                disabled
+                                className="w-3.5 h-3.5 text-emerald-600 bg-slate-700 border-slate-600 rounded cursor-not-allowed"
+                              />
+                              <h3 className="text-sm font-semibold text-slate-300 flex-1">{module.display_name}</h3>
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-blue-900/30 text-blue-400">
+                                INCLUDED
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Recommended Modules */}
                   <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
                     <h2 className="text-lg font-semibold text-slate-100 mb-2">
                       Recommended Modules
@@ -629,47 +695,66 @@ export default function WizardPage() {
                   </div>
 
                   {/* Pricing Summary */}
-                  {pricing && (
+                  {(pricing || selectedModules.length > 0) && (
                     <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
                       <h2 className="text-lg font-semibold text-slate-100 mb-3">Pricing Summary</h2>
 
                       <div className="bg-slate-800 p-3 rounded-lg space-y-2 mb-3 text-sm">
-                        <div className="flex justify-between text-slate-300">
-                          <span>Base Platform</span>
-                          <span className="font-semibold">€{pricing.base_price.toFixed(2)}/mo</span>
-                        </div>
-                        <div className="flex justify-between text-slate-300">
-                          <span className="text-xs">
-                            {profile.estimated_ai_systems} AI System(s) × €{pricing.per_system_price.toFixed(2)}
-                          </span>
-                          <span className="font-semibold text-xs">
-                            €{(pricing.per_system_price * (profile.estimated_ai_systems || 1)).toFixed(2)}/mo
-                          </span>
-                        </div>
-                        {selectedModules.length > 0 && (
-                          <div className="border-t border-slate-700 pt-2">
-                            <div className="text-xs font-medium mb-1 text-slate-300">Modules:</div>
-                            <div className="max-h-20 overflow-y-auto space-y-1">
-                              {selectedModules.map(moduleName => {
-                                const price = pricing.module_prices[moduleName] || 0;
-                                return price > 0 ? (
-                                  <div key={moduleName} className="flex justify-between text-xs text-slate-400">
-                                    <span className="truncate">{moduleName.replace(/_/g, ' ')}</span>
-                                    <span>€{price.toFixed(2)}</span>
-                                  </div>
-                                ) : null;
-                              })}
+                        {pricing ? (
+                          <>
+                            <div className="flex justify-between text-slate-300">
+                              <span>Base Platform</span>
+                              <span className="font-semibold">€{pricing.base_price.toFixed(2)}/mo</span>
                             </div>
+                            <div className="flex justify-between text-slate-300">
+                              <span className="text-xs">
+                                {profile.estimated_ai_systems} AI System(s) × €{pricing.per_system_price.toFixed(2)}
+                              </span>
+                              <span className="font-semibold text-xs">
+                                €{(pricing.per_system_price * (profile.estimated_ai_systems || 1)).toFixed(2)}/mo
+                              </span>
+                            </div>
+                            {selectedModules.length > 0 && (() => {
+                              const coreModuleNames = recommendations?.core_modules?.map((m: RecommendedModule) => m.module_name) || [];
+                              const modulesWithPrice = selectedModules
+                                .filter(moduleName => !coreModuleNames.includes(moduleName))
+                                .map(moduleName => {
+                                  const price = pricing.module_prices[moduleName] || 0;
+                                  return { moduleName, price };
+                                })
+                                .filter(m => m.price > 0);
+                              
+                              return modulesWithPrice.length > 0 ? (
+                                <div className="border-t border-slate-700 pt-2">
+                                  <div className="text-xs font-medium mb-1 text-slate-300">Modules:</div>
+                                  <div className="max-h-20 overflow-y-auto space-y-1">
+                                    {modulesWithPrice.map(({ moduleName, price }) => (
+                                      <div key={moduleName} className="flex justify-between text-xs text-slate-400">
+                                        <span className="truncate">{moduleName.replace(/_/g, ' ')}</span>
+                                        <span>€{price.toFixed(2)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null;
+                            })()}
+                            <div className="border-t border-slate-700 pt-2 flex justify-between font-bold text-slate-100">
+                              <span>Total (Monthly)</span>
+                              <span className="text-emerald-400">€{pricing.total_monthly.toFixed(2)}/mo</span>
+                            </div>
+                            <div className="flex justify-between text-xs text-slate-400">
+                              <span>Annual: €{pricing.total_annual.toFixed(2)}</span>
+                              <span className="text-emerald-400">Save €{pricing.savings_annual.toFixed(2)}</span>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="text-center py-4">
+                            <p className="text-sm text-slate-400 mb-2">Calculating pricing...</p>
+                            <p className="text-xs text-slate-500">
+                              {selectedModules.length} module(s) selected
+                            </p>
                           </div>
                         )}
-                        <div className="border-t border-slate-700 pt-2 flex justify-between font-bold text-slate-100">
-                          <span>Total (Monthly)</span>
-                          <span className="text-emerald-400">€{pricing.total_monthly.toFixed(2)}/mo</span>
-                        </div>
-                        <div className="flex justify-between text-xs text-slate-400">
-                          <span>Annual: €{pricing.total_annual.toFixed(2)}</span>
-                          <span className="text-emerald-400">Save €{pricing.savings_annual.toFixed(2)}</span>
-                        </div>
                       </div>
 
                       <div className="bg-emerald-900/20 border border-emerald-800 p-2 rounded-lg mb-3">
@@ -695,23 +780,49 @@ export default function WizardPage() {
                           )}
                         </div>
                       ) : (
-                        <button
-                          onClick={handleNext}
-                          disabled={loading}
-                          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-4 rounded-lg text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                        >
-                          {loading ? (
-                            <>
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                              Starting Trial...
-                            </>
-                          ) : (
-                            <>
-                              Start Free Trial
-                              <ArrowRight className="w-4 h-4" />
-                            </>
-                          )}
-                        </button>
+                        <>
+                          <p className="text-xs text-slate-500 text-center mb-3">
+                            Based on technical parameters provided. Does not guarantee regulatory approval.
+                          </p>
+                          <div className="flex items-start gap-2 mb-3">
+                            <input
+                              type="checkbox"
+                              id="wizard-terms-checkbox"
+                              checked={agreedToTerms}
+                              onChange={(e) => setAgreedToTerms(e.target.checked)}
+                              className="mt-1 w-4 h-4 text-emerald-600 bg-slate-700 border-slate-600 rounded focus:ring-emerald-500"
+                            />
+                            <label htmlFor="wizard-terms-checkbox" className="text-xs text-slate-400">
+                              I agree to the{" "}
+                              <a
+                                href="/terms"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-emerald-400 hover:text-emerald-300 underline"
+                              >
+                                Terms of Service
+                              </a>
+                              {" "}and acknowledge that Veridion Nexus does not provide legal advice.
+                            </label>
+                          </div>
+                          <button
+                            onClick={handleNext}
+                            disabled={loading || !agreedToTerms}
+                            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-4 rounded-lg text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                          >
+                            {loading ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                Starting Trial...
+                              </>
+                            ) : (
+                              <>
+                                Start Free Trial
+                                <ArrowRight className="w-4 h-4" />
+                              </>
+                            )}
+                          </button>
+                        </>
                       )}
                     </div>
                   )}
@@ -756,6 +867,6 @@ export default function WizardPage() {
           </div>
         )}
       </div>
-    </DashboardLayout>
+    </WizardLayout>
   );
 }

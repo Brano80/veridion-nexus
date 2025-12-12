@@ -1,9 +1,10 @@
 "use client";
 
 import DashboardLayout from "../components/DashboardLayout";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { TrendingUp, TrendingDown, Activity, ArrowUp, ArrowDown, CheckCircle, XCircle, BarChart3 } from "lucide-react";
+import { TrendingUp, TrendingDown, Activity, ArrowUp, ArrowDown, CheckCircle, XCircle, BarChart3, History, Gauge, RefreshCw } from "lucide-react";
+import { useState } from "react";
 import { getAuthHeaders } from "../utils/auth";
 
 const API_BASE = "http://127.0.0.1:8080/api/v1";
@@ -63,10 +64,37 @@ async function fetchCanaryAnalytics(): Promise<CanaryAnalytics> {
   return res.json();
 }
 
+interface CanaryHistory {
+  transitions: Array<{
+    policy_id: string;
+    policy_type: string;
+    from_percentage: number;
+    to_percentage: number;
+    reason: string;
+    success_rate: number;
+    total_requests: number;
+    timestamp: string;
+  }>;
+  total_count: number;
+}
+
+async function fetchCanaryHistory(policyId: string): Promise<CanaryHistory> {
+  const res = await fetch(`${API_BASE}/policies/${policyId}/canary/history?limit=100`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch history: ${res.status}`);
+  }
+  return res.json();
+}
+
 async function updateCanaryTraffic(policyId: string, trafficPercentage: number) {
   const res = await fetch(`${API_BASE}/policies/${policyId}/canary-config`, {
     method: "POST",
-    headers: getAuthHeaders(),
+    headers: {
+      ...getAuthHeaders(),
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       traffic_percentage: trafficPercentage,
     }),
@@ -83,10 +111,19 @@ async function updateCanaryTraffic(policyId: string, trafficPercentage: number) 
 
 export default function CanaryPage() {
   const queryClient = useQueryClient();
-  const { data: analytics, isLoading, error } = useQuery({
+  const [selectedPolicy, setSelectedPolicy] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"overview" | "history">("overview");
+
+  const { data: analytics, isLoading, error, refetch } = useQuery({
     queryKey: ["canary-analytics"],
     queryFn: fetchCanaryAnalytics,
     refetchInterval: 30000, // Refresh every 30 seconds
+  });
+
+  const { data: history, isLoading: historyLoading } = useQuery({
+    queryKey: ["canary-history", selectedPolicy],
+    queryFn: () => selectedPolicy ? fetchCanaryHistory(selectedPolicy) : null,
+    enabled: !!selectedPolicy && activeTab === "history",
   });
 
   const updateTrafficMutation = useMutation({
@@ -142,16 +179,59 @@ export default function CanaryPage() {
     <DashboardLayout>
       <div className="p-8 space-y-6">
         {/* Header */}
-        <div>
-          <h1 className="text-3xl font-bold text-slate-100 flex items-center gap-3">
-            <BarChart3 className="text-emerald-400" size={32} />
-            Canary Deployment Dashboard
-          </h1>
-          <p className="text-slate-400 mt-2">
-            Monitor gradual policy rollouts with automatic promotion and rollback
-          </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-100 flex items-center gap-3">
+              <BarChart3 className="text-emerald-400" size={32} />
+              Canary Deployment Dashboard
+            </h1>
+            <p className="text-slate-400 mt-2">
+              Monitor gradual policy rollouts with automatic promotion and rollback
+            </p>
+          </div>
+          <button
+            onClick={() => refetch()}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-slate-200 hover:bg-slate-700 flex items-center gap-2"
+          >
+            <RefreshCw size={16} />
+            Refresh
+          </button>
         </div>
 
+        {/* Tabs */}
+        <div className="flex gap-2 border-b border-slate-700">
+          <button
+            onClick={() => {
+              setActiveTab("overview");
+              setSelectedPolicy(null);
+            }}
+            className={`px-4 py-2 font-semibold border-b-2 transition-colors ${
+              activeTab === "overview"
+                ? "border-emerald-400 text-emerald-400"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Activity size={16} className="inline mr-2" />
+            Overview
+          </button>
+          {selectedPolicy && (
+            <button
+              onClick={() => setActiveTab("history")}
+              className={`px-4 py-2 font-semibold border-b-2 transition-colors ${
+                activeTab === "history"
+                  ? "border-emerald-400 text-emerald-400"
+                  : "border-transparent text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <History size={16} className="inline mr-2" />
+              History
+            </button>
+          )}
+        </div>
+
+        {/* Content based on active tab */}
+        {activeTab === "overview" && (
+          <>
         {/* Key Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6">
@@ -363,6 +443,82 @@ export default function CanaryPage() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+          </>
+        )}
+
+        {activeTab === "history" && selectedPolicy && (
+          <div className="bg-slate-800/50 border border-slate-700 rounded-lg p-6">
+            <h2 className="text-xl font-semibold text-slate-100 mb-4 flex items-center gap-2">
+              <History className="text-emerald-400" size={20} />
+              Canary Deployment History
+              {analytics && (
+                <span className="text-sm text-slate-400 font-normal ml-2">
+                  - {analytics.policies.find(p => p.policy_id === selectedPolicy)?.policy_type || "Policy"}
+                </span>
+              )}
+            </h2>
+            {historyLoading ? (
+              <div className="text-slate-400 text-center py-8">Loading history...</div>
+            ) : history && history.transitions.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-sm text-slate-400 mb-4">
+                  Total transitions: {history.total_count}
+                </div>
+                {history.transitions.map((transition, idx) => (
+                  <div
+                    key={idx}
+                    className={`bg-slate-900/50 rounded-lg p-4 border ${
+                      transition.to_percentage > transition.from_percentage
+                        ? "border-emerald-800 bg-emerald-900/10"
+                        : transition.to_percentage < transition.from_percentage
+                        ? "border-red-800 bg-red-900/10"
+                        : "border-slate-700"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        {transition.to_percentage > transition.from_percentage ? (
+                          <ArrowUp className="text-emerald-400" size={20} />
+                        ) : transition.to_percentage < transition.from_percentage ? (
+                          <ArrowDown className="text-red-400" size={20} />
+                        ) : (
+                          <Activity className="text-slate-400" size={20} />
+                        )}
+                        <div>
+                          <span className="font-semibold text-slate-200">
+                            {transition.from_percentage}% → {transition.to_percentage}%
+                          </span>
+                          <span className="text-xs text-slate-400 ml-2">
+                            {transition.to_percentage > transition.from_percentage ? "PROMOTED" : transition.to_percentage < transition.from_percentage ? "ROLLED BACK" : "NO CHANGE"}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-sm text-slate-300">
+                        {format(new Date(transition.timestamp), "MMM d, yyyy HH:mm:ss")}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4 text-sm text-slate-400 mb-2">
+                      <div>
+                        Success Rate: <span className="text-slate-200 font-semibold">{transition.success_rate.toFixed(2)}%</span>
+                      </div>
+                      <div>
+                        Total Requests: <span className="text-slate-200 font-semibold">{transition.total_requests.toLocaleString()}</span>
+                      </div>
+                      <div>
+                        Policy: <span className="text-slate-200 font-semibold">{transition.policy_type}</span>
+                      </div>
+                    </div>
+                    {transition.reason && (
+                      <div className="text-xs text-slate-400 mt-2 italic">{transition.reason}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-slate-400 text-center py-8">No history available for this policy</div>
+            )}
           </div>
         )}
       </div>
